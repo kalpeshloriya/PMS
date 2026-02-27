@@ -47,18 +47,33 @@ SMTP_FROM = os.environ.get('SMTP_FROM', 'no-reply@localhost')
 TEAMS_WEBHOOK_URL = os.environ.get('TEAMS_WEBHOOK_URL')
 
 
+
 import os
 
-# --- Database configuration (psycopg3 driver in prod, SQLite locally) ---
+# --- Database configuration (force psycopg3 driver in prod, SQLite locally) ---
 db_url = os.getenv('DATABASE_URL')
+
+def force_psycopg3(url: str) -> str:
+    if not url:
+        return url
+    # Already correct?
+    if url.startswith("postgresql+psycopg://"):
+        return url
+    # Handle both postgres:// and postgresql://
+    if url.startswith("postgres://"):
+        return "postgresql+psycopg://" + url[len("postgres://"):]
+    if url.startswith("postgresql://"):
+        return "postgresql+psycopg://" + url[len("postgresql://"):]
+    return url  # leave custom drivers untouched
+
 if db_url:
-    # Force psycopg3 driver
-    db_url = db_url.replace("postgres://", "postgresql+psycopg://", 1)
+    db_url = force_psycopg3(db_url)
 
 app.config['SQLALCHEMY_DATABASE_URI'] = db_url or "sqlite:///pms.db"
 app.config.setdefault('SQLALCHEMY_TRACK_MODIFICATIONS', False)
 
-print("DB in use:", app.config.get('SQLALCHEMY_DATABASE_URI'))  # keep for Render logs
+print("DB in use:", app.config.get('SQLALCHEMY_DATABASE_URI'))  # keep for logs
+
 db = SQLAlchemy(app)
 
 login_manager = LoginManager(app)
