@@ -23,18 +23,22 @@
                 <li class="nav-item dropdown">
                   <a class="nav-link dropdown-toggle" href="#" role="button" data-bs-toggle="dropdown">Admin</a>
                   <ul class="dropdown-menu dropdown-menu-dark">
-                    <li><a class="dropdown-item" href="{{ url_for('team_members') }}">Team Members</a></li>
-                    <li><a class="dropdown-item" href="{{ url_for('groups') }}">Groups</a></li>
-                    <li><a class="dropdown-item" href="{{ url_for('grades') }}">Grades</a></li>
-                    <li><a class="dropdown-item" href="{{ url_for('roles') }}">Roles</a></li>
-                    <li><a class="dropdown-item" href="{{ url_for('tower_skills') }}">Tower Skills</a></li>
-                    <li><a class="dropdown-item" href="{{ url_for('competency_skills') }}">Competency Skills</a></li>
-                    <li><a class="dropdown-item" href="{{ url_for('mappings') }}">Mappings</a></li>
-                    <li><a class="dropdown-item" href="{{ url_for('expected_levels') }}">Expected Levels</a></li>
-                    <li><a class="dropdown-item" href="{{ url_for('import_export') }}">Import/Export</a></li>
-                    <li><a class="dropdown-item" href="{{ url_for('courses') }}">Courses</a></li>
-                    <li><a class="dropdown-item" href="{{ url_for('calibration') }}">Calibration</a></li>
-                  </ul>
+                    <li><a class="dropdown-item" href="{{ safe_url_for('team_members') }}">Team Members</a></li>
+                    <li><a class="dropdown-item" href="{{ safe_url_for('groups') }}">Groups</a></li>
+                    <li><a class="dropdown-item" href="{{ safe_url_for('grades') }}">Grades</a></li>
+                    <li><a class="dropdown-item" href="{{ safe_url_for('roles') }}">Roles</a></li>
+                    <li><a class="dropdown-item" href="{{ safe_url_for('tower_skills') }}">Tower Skills</a></li>
+                    <li><a class="dropdown-item" href="{{ safe_url_for('competency_skills') }}">Competency Skills</a></li>
+                    <li><a class="dropdown-item" href="{{ safe_url_for('mappings') }}">Mappings</a></li>
+                    <li><a class="dropdown-item" href="{{ safe_url_for('expected_levels') }}">Expected Levels</a></li>
+                    <li><a class="dropdown-item" href="{{ safe_url_for('import_export') }}">Import/Export</a></li>
+                    <li><a class="dropdown-item" href="{{ safe_url_for('courses') }}">Courses</a></li>
+                    <li><a class="dropdown-item" href="{{ safe_url_for('calibration') }}">Calibration</a></li>
+                  
+{% if not current_user.is_authenticated %}
+<li class="nav-item"><a class="nav-link" href="{{ safe_url_for('signup') }}">Sign up</a></li>
+{% endif %}
+</ul>
                 </li>
               {% elif current_user.is_manager %}
                 <li class="nav-item"><a class="nav-link" href="{{ url_for('dashboard') }}">Dashboard</a></li>

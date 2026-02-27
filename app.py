@@ -19,6 +19,18 @@ except Exception:
     msal = None
 
 app = Flask(__name__)
+
+from werkzeug.routing import BuildError
+
+@app.context_processor
+def utility_processor():
+    def safe_url_for(endpoint, **values):
+        try:
+            return url_for(endpoint, **values)
+        except BuildError:
+            return '#'
+    return dict(safe_url_for=safe_url_for)
+
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY','change-me-in-production')
 app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///pms.db'
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
@@ -428,68 +440,40 @@ def dashboard():
 def parse_bool(val):
     return str(val).lower() in ('1','true','yes','y','on')
 
-@app.route('/admin/team', methods=['GET','POST'])
-@login_required
-@require_roles('ADMIN')
-def team_members():
-    edit_id = request.args.get('edit_id', type=int)
-    item = User.query.get(edit_id) if edit_id else None
-    if request.method == 'POST':
-        data = request.form
-        if item is None:
-            item = User(username=data['username'])
-            item.set_password('Password123!')
-            db.session.add(item)
-        before = item.__dict__.copy()
-        item.full_name = data.get('full_name')
-        item.email = data.get('email')
-        item.is_manager = parse_bool(data.get('is_manager','false'))
-        item.app_role = data.get('app_role') or item.app_role
-        item.group_id = int(data['group_id']) if data.get('group_id') else None
-        item.grade_id = int(data['grade_id']) if data.get('grade_id') else None
-        item.role_id = int(data['role_id']) if data.get('role_id') else None
-        item.manager_id = int(data['manager_id']) if data.get('manager_id') else None
-        db.session.commit()
-        log_audit('UPSERT','User', item.id, before=before, after=item.__dict__)
-        flash('Saved team member', 'success')
-        return redirect(url_for('team_members'))
-    rows = User.query.order_by(User.id).all()
-    return render_template('team_members.html', rows=rows, item=item)
+
+# --- Team Members (ADMIN only) with dropdowns and last-admin guard ---
 
 @app.route('/admin/team/delete/<int:id>')
 @login_required
 @require_roles('ADMIN')
 def team_members_delete(id):
-    u = User.query.get_or_404(id)
-    before = u.__dict__.copy()
+    u = db.session.get(User, id)
+    if not u:
+        abort(404)
+
+    # Guard: cannot delete the LAST admin
+    if u.app_role == 'ADMIN':
+        remaining_admins = User.query.filter(User.app_role == 'ADMIN',
+                                             User.id != u.id).count()
+        if remaining_admins == 0:
+            flash('Cannot delete the LAST admin user.', 'danger')
+            return redirect(url_for('team_members'))
+
+    # (Optional) prevent deleting yourself when you’re the last admin
+    if current_user.id == u.id:
+        other_admins = User.query.filter(User.app_role == 'ADMIN',
+                                         User.id != u.id).count()
+        if other_admins == 0:
+            flash('You cannot delete your own account while you are the last admin.', 'danger')
+            return redirect(url_for('team_members'))
+
+    before = dict(u.__dict__)
     db.session.delete(u)
     db.session.commit()
-    log_audit('DELETE','User', id, before=before)
+    log_audit('DELETE', 'User', id, before=before)
+
     flash('Deleted', 'success')
     return redirect(url_for('team_members'))
-
-@app.route('/admin/groups', methods=['GET','POST'])
-@login_required
-@require_roles('ADMIN')
-def groups():
-    edit_id = request.args.get('edit_id', type=int)
-    item = Group.query.get(edit_id) if edit_id else None
-    if request.method == 'POST':
-        name = request.form['name']
-        desc = request.form.get('description')
-        if item is None:
-            item = Group(name=name, description=desc)
-            db.session.add(item)
-        else:
-            item.name = name
-            item.description = desc
-        db.session.commit()
-        log_audit('UPSERT','Group', item.id, after=item.__dict__)
-        flash('Saved group', 'success')
-        return redirect(url_for('groups'))
-    rows = Group.query.order_by(Group.id).all()
-    return render_template('groups.html', rows=rows, item=item)
-
 @app.route('/admin/groups/delete/<int:id>')
 @login_required
 @require_roles('ADMIN')
@@ -1201,3 +1185,191 @@ if __name__ == '__main__':
     with app.app_context():
         init_db()
     app.run(debug=True)
+
+
+# --- Team Members (password aware, last-admin guarded) ---
+
+def signup():
+    if current_user.is_authenticated:
+        return redirect(url_for('index'))
+
+    error = None
+    if request.method == 'POST':
+        username = (request.form.get('username') or '').strip()
+        email    = (request.form.get('email') or '').strip()
+        pwd      = request.form.get('password') or ''
+        cpw      = request.form.get('confirm_password') or ''
+
+        if not username:
+            error = 'Username is required.'
+        elif User.query.filter_by(username=username).first():
+            error = 'Username already exists.'
+        elif not email:
+            error = 'Email is required.'
+        elif len(pwd) < 8:
+            error = 'Password must be at least 8 characters.'
+        elif pwd != cpw:
+            error = 'Passwords do not match.'
+
+        if not error:
+            u = User(username=username, email=email, full_name=None,
+                     is_manager=False, app_role='EMPLOYEE')
+            if hasattr(u,'set_password'):
+                u.set_password(pwd)
+            else:
+                from werkzeug.security import generate_password_hash
+                u.password_hash = generate_password_hash(pwd)
+            db.session.add(u)
+            db.session.commit()
+            log_audit('CREATE','User', u.id, after=u.__dict__)
+            flash('Signup successful. Please log in.', 'success')
+            return redirect(url_for('login'))
+        flash(error, 'danger')
+
+    return render_template('signup.html')
+
+
+
+# --- Team Members (password aware, last-admin guarded) ---
+
+@app.route('/admin/team', methods=['GET','POST'])
+@login_required
+@require_roles('ADMIN')
+def team_members():
+    # Dropdown data
+    groups = Group.query.order_by(Group.name).all()
+    grades = Grade.query.order_by(Grade.name).all()
+    roles  = Role.query.order_by(Role.name).all()
+
+    mgr_flagged = User.query.filter_by(is_manager=True).all()
+    admins      = User.query.filter_by(app_role='ADMIN').all()
+    managers = list({u.id: u for u in (mgr_flagged + admins)}.values())
+
+    edit_id = request.args.get('edit_id', type=int)
+    item = db.session.get(User, edit_id) if edit_id else None
+
+    if request.method == 'POST':
+        data = request.form
+        creating = item is None
+
+        if creating:
+            username = (data.get('username') or '').strip()
+            if not username:
+                flash('Username is required', 'danger')
+                return redirect(url_for('team_members'))
+            if User.query.filter_by(username=username).first():
+                flash('Username already exists', 'danger')
+                return redirect(url_for('team_members'))
+            item = User(username=username)
+            db.session.add(item)
+
+        before = dict(item.__dict__)
+
+        # basic fields
+        item.full_name = data.get('full_name') or None
+        item.email = data.get('email') or None
+
+        def parse_bool(v):
+            return str(v).strip().lower() in ('1','true','yes','y','on')
+        item.is_manager = parse_bool(data.get('is_manager','false'))
+
+        # app role guard (cannot demote last admin)
+        new_app_role = data.get('app_role') or item.app_role or 'EMPLOYEE'
+        if item.app_role == 'ADMIN' and new_app_role != 'ADMIN':
+            remaining_admins = User.query.filter(User.app_role=='ADMIN', User.id!=item.id).count()
+            if remaining_admins == 0:
+                flash('Cannot demote the LAST admin user.', 'danger')
+                return redirect(url_for('team_members'))
+        item.app_role = new_app_role
+
+        # passwords
+        pwd = data.get('password') or ''
+        cpw = data.get('confirm_password') or ''
+        if creating:
+            if len(pwd) < 8:
+                flash('Password must be at least 8 characters for new user.', 'danger')
+                return redirect(url_for('team_members'))
+            if pwd != cpw:
+                flash('Passwords do not match.', 'danger')
+                return redirect(url_for('team_members'))
+            if hasattr(item,'set_password'):
+                item.set_password(pwd)
+            else:
+                from werkzeug.security import generate_password_hash
+                item.password_hash = generate_password_hash(pwd)
+        else:
+            if pwd:
+                if len(pwd) < 8:
+                    flash('New password must be at least 8 characters.', 'danger')
+                    return redirect(url_for('team_members', edit_id=item.id))
+                if pwd != cpw:
+                    flash('New passwords do not match.', 'danger')
+                    return redirect(url_for('team_members', edit_id=item.id))
+                if hasattr(item,'set_password'):
+                    item.set_password(pwd)
+                else:
+                    from werkzeug.security import generate_password_hash
+                    item.password_hash = generate_password_hash(pwd)
+
+        def to_int_or_none(val):
+            s = (val or '').strip()
+            return int(s) if s.isdigit() else None
+
+        item.group_id   = to_int_or_none(data.get('group_id'))
+        item.grade_id   = to_int_or_none(data.get('grade_id'))
+        item.role_id    = to_int_or_none(data.get('role_id'))
+        item.manager_id = to_int_or_none(data.get('manager_id'))
+
+        db.session.commit()
+        log_audit('UPSERT','User', item.id, before=before, after=item.__dict__)
+        flash('Saved team member', 'success')
+        return redirect(url_for('team_members'))
+
+    rows = User.query.order_by(User.id).all()
+    return render_template('team_members.html', rows=rows, item=item,
+                           groups=groups, grades=grades, roles=roles, managers=managers)
+
+
+
+# --- Public Signup (username, email, password) ---
+
+@app.route('/signup', methods=['GET','POST'])
+def signup():
+    if current_user.is_authenticated:
+        return redirect(url_for('index'))
+
+    error = None
+    if request.method == 'POST':
+        username = (request.form.get('username') or '').strip()
+        email    = (request.form.get('email') or '').strip()
+        pwd      = request.form.get('password') or ''
+        cpw      = request.form.get('confirm_password') or ''
+
+        if not username:
+            error = 'Username is required.'
+        elif User.query.filter_by(username=username).first():
+            error = 'Username already exists.'
+        elif not email:
+            error = 'Email is required.'
+        elif len(pwd) < 8:
+            error = 'Password must be at least 8 characters.'
+        elif pwd != cpw:
+            error = 'Passwords do not match.'
+
+        if not error:
+            u = User(username=username, email=email, full_name=None,
+                     is_manager=False, app_role='EMPLOYEE')
+            if hasattr(u,'set_password'):
+                u.set_password(pwd)
+            else:
+                from werkzeug.security import generate_password_hash
+                u.password_hash = generate_password_hash(pwd)
+            db.session.add(u)
+            db.session.commit()
+            log_audit('CREATE','User', u.id, after=u.__dict__)
+            flash('Signup successful. Please log in.', 'success')
+            return redirect(url_for('login'))
+        flash(error, 'danger')
+
+    return render_template('signup.html')
+
