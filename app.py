@@ -48,14 +48,14 @@ TEAMS_WEBHOOK_URL = os.environ.get('TEAMS_WEBHOOK_URL')
 
 import os
 
-# --- Database configuration (env-first: Postgres on Render, SQLite locally) ---
 db_url = os.getenv('DATABASE_URL')
 if db_url:
-    # Render sometimes provides postgres://; SQLAlchemy prefers postgresql://
-    db_url = db_url.replace('postgres://', 'postgresql://', 1)
+    # Use psycopg3 driver explicitly
+    db_url = db_url.replace("postgres://", "postgresql+psycopg://", 1)
 
-app.config['SQLALCHEMY_DATABASE_URI'] = db_url or 'sqlite:///pms.db'
+app.config['SQLALCHEMY_DATABASE_URI'] = db_url or "sqlite:///pms.db"
 app.config.setdefault('SQLALCHEMY_TRACK_MODIFICATIONS', False)
+
 db = SQLAlchemy(app)
 login_manager = LoginManager(app)
 # --- Database configuration (env-first: Postgres on Render, SQLite locally) ---
