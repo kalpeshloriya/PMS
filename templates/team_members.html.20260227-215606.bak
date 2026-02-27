@@ -1,0 +1,88 @@
+{% extends 'base.html' %}
+{% block content %}
+<h3 class="mb-3">Team Members</h3>
+<div class="row">
+  <div class="col-md-5">
+    <div class="card p-3 mb-3">
+      <h5>{{ 'Edit' if item else 'Add New' }}</h5>
+      <form method="post">
+        <div class="mb-2"><label class="form-label">Username</label>
+          <input name="username" class="form-control" value="{{ item.username if item }}" {% if item %}readonly{% endif %} required></div>
+        <div class="mb-2"><label class="form-label">Full Name</label>
+          <input name="full_name" class="form-control" value="{{ item.full_name if item }}"></div>
+        <div class="mb-2"><label class="form-label">Email</label>
+          <input name="email" class="form-control" value="{{ item.email if item }}"></div>
+        <div class="mb-2"><label class="form-label">Is Manager</label>
+          <select name="is_manager" class="form-select">
+            <option value="false" {% if item and not item.is_manager %}selected{% endif %}>No</option>
+            <option value="true"  {% if item and item.is_manager %}selected{% endif %}>Yes</option>
+          </select></div>
+        <div class="mb-2"><label class="form-label">App Role</label>
+          {% set roles_list = ['EMPLOYEE','MANAGER','ADMIN','HRBP','TOWER_LEAD','PRACTICE_HEAD'] %}
+          <select name="app_role" class="form-select">
+            {% for r in roles_list %}<option value="{{ r }}" {% if item and item.app_role==r %}selected{% endif %}>{{ r }}</option>{% endfor %}
+          </select></div>
+        <div class="mb-2"><label class="form-label">Password {% if item %}(leave blank to keep){% else %}(min 8 chars){% endif %}</label>
+          <input name="password" type="password" class="form-control" {% if not item %}required{% endif %} minlength="8"></div>
+        <div class="mb-3"><label class="form-label">Confirm Password</label>
+          <input name="confirm_password" type="password" class="form-control" {% if not item %}required{% endif %} minlength="8"></div>
+        <div class="mb-2"><label class="form-label">Group</label>
+          <select name="group_id" class="form-select">
+            <option value="">- None -</option>
+            {% for g in groups %}<option value="{{ g.id }}" {% if item and item.group_id==g.id %}selected{% endif %}>{{ g.name }}</option>{% endfor %}
+          </select></div>
+        <div class="mb-2"><label class="form-label">Grade</label>
+          <select name="grade_id" class="form-select">
+            <option value="">- None -</option>
+            {% for g in grades %}<option value="{{ g.id }}" {% if item and item.grade_id==g.id %}selected{% endif %}>{{ g.name }}</option>{% endfor %}
+          </select></div>
+        <div class="mb-2"><label class="form-label">Role</label>
+          <select name="role_id" class="form-select">
+            <option value="">- None -</option>
+            {% for r in roles %}<option value="{{ r.id }}" {% if item and item.role_id==r.id %}selected{% endif %}>{{ r.name }}</option>{% endfor %}
+          </select></div>
+        <div class="mb-3"><label class="form-label">Manager</label>
+          <select name="manager_id" class="form-select">
+            <option value="">- None -</option>
+            {% for m in managers %}<option value="{{ m.id }}" {% if item and item.manager_id==m.id %}selected{% endif %}>{{ m.full_name or m.username }}{% if m.app_role=='ADMIN' %} (ADMIN){% elif m.is_manager %} (Manager){% endif %}</option>{% endfor %}
+          </select></div>
+        <button class="btn btn-primary">{{ 'Update' if item else 'Create' }}</button>
+        {% if item %}<a class="btn btn-secondary" href="{{ url_for('team_members') }}">Cancel</a>{% endif %}
+      </form>
+    </div>
+  </div>
+  <div class="col-md-7">
+    <div class="card p-3">
+      <h5>All</h5>
+      <table class="table table-striped table-hover">
+        <thead>
+          <tr>
+            <th>ID</th><th>Username</th><th>Name</th><th>Email</th>
+            <th>App Role</th><th>IsMgr</th><th>Group</th><th>Grade</th><th>Role</th><th>Manager</th><th></th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in rows %}
+          <tr>
+            <td>{{ row.id }}</td>
+            <td>{{ row.username }}</td>
+            <td>{{ row.full_name or '-' }}</td>
+            <td>{{ row.email or '-' }}</td>
+            <td>{{ row.app_role }}</td>
+            <td>{{ 'Yes' if row.is_manager else 'No' }}</td>
+            <td>{{ row.group.name if row.group else '-' }}</td>
+            <td>{{ row.grade.name if row.grade else '-' }}</td>
+            <td>{{ row.role.name if row.role else '-' }}</td>
+            <td>{% if row.manager %}{{ row.manager.full_name or row.manager.username }}{% elif row.manager_id %}ID {{ row.manager_id }}{% else %}-{% endif %}</td>
+            <td>
+              <a class="btn btn-sm btn-primary" href="{{ url_for('team_members', edit_id=row.id) }}">Edit</a>
+              <a class="btn btn-sm btn-danger" href="{{ url_for('team_members_delete', id=row.id) }}" onclick="return confirm('Delete?');">Delete</a>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+{% endblock %}
