@@ -1,0 +1,20 @@
+{% extends 'base.html' %}
+{% block content %}
+<h3 class="mb-3">Import / Export (CSV / Excel)</h3>
+<div class="row g-3">
+  <div class="col-md-6"><div class="card p-3"><h5>Export</h5><ul>
+  {% for key, label in exports %}
+    <li><a href="{{ url_for('export_data', entity=key, fmt='csv') }}">{{ label }} (.csv)</a> | <a href="{{ url_for('export_data', entity=key, fmt='xlsx') }}">{{ label }} (.xlsx)</a></li>
+  {% endfor %}
+  </ul></div></div>
+  <div class="col-md-6"><div class="card p-3"><h5>Import</h5>
+    <form method="post" enctype="multipart/form-data">
+      <div class="mb-2"><label class="form-label">Entity</label>
+        <select name="entity" class="form-select">{% for key, label in exports %}<option value="{{ key }}">{{ label }}</option>{% endfor %}</select>
+      </div>
+      <div class="mb-2"><label class="form-label">File (.csv/.xlsx)</label><input type="file" name="file" class="form-control" required></div>
+      <button class="btn btn-primary">Upload</button>
+    </form>
+  </div></div>
+</div>
+{% endblock %}

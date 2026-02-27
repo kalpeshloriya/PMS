@@ -1,0 +1,43 @@
+{% extends 'base.html' %}
+{% block content %}
+<h3 class="mb-3">Manager Competency Review</h3>
+<form method="get" class="row g-2 mb-3">
+  <div class="col-md-4"><label class="form-label">Team Member</label><select class="form-select" name="user_id">{% for u in team %}<option value="{{ u.id }}" {% if sel_user and sel_user.id==u.id %}selected{% endif %}>{{ u.full_name or u.username }}</option>{% endfor %}</select></div>
+  {% if cycles %}
+  <div class="col-md-3"><label class="form-label">Cycle</label><select class="form-select" name="cycle_id">{% for c in cycles %}<option value="{{ c.id }}" {% if sel_cycle_id==c.id %}selected{% endif %}>{{ c.name }}</option>{% endfor %}</select></div>
+  {% endif %}
+  <div class="col-md-2 align-self-end"><button class="btn btn-secondary w-100">Load</button></div>
+</form>
+{% if sel_user %}
+<form method="post">
+  <input type="hidden" name="user_id" value="{{ sel_user.id }}">
+  <input type="hidden" name="cycle_id" value="{{ sel_cycle_id }}">
+  <div class="card p-3">
+    <table class="table table-striped">
+      <thead>
+        <tr>
+          <th>Competency</th><th>Expected</th><th>Self</th><th>Self Comment</th><th>Manager Review (L0–L4)</th><th>Manager Comment</th><th>Gap</th><th>Weighted</th><th>Training</th><th>Courses</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in rows %}
+        <tr>
+          <td>{{ row.competency.name }}</td>
+          <td>L{{ row.expected }}</td>
+          <td>L{{ row.self_level if row.self_level is not none else '-' }}</td>
+          <td style="max-width:320px;"><div class="small-muted">{{ row.self_comment or '-' }}</div></td>
+          <td><select class="form-select" name="comp_{{ row.competency.id }}">{% for i in range(5) %}<option value="{{ i }}" {% if row.manager_level == i %}selected{% endif %}>L{{ i }}</option>{% endfor %}</select></td>
+          <td><textarea class="form-control" name="cmt_{{ row.competency.id }}" rows="2" placeholder="Manager’s notes, evidence, next steps..."></textarea></td>
+          <td>{{ row.gap }}</td>
+          <td>{{ row.weighted_gap }}</td>
+          <td>{% if row.gap > 0 %}<span class="badge badge-gap">Training Required</span>{% else %}<span class="badge badge-ok">OK</span>{% endif %}</td>
+          <td>{% for crs in row.courses %}<a class="btn btn-sm btn-secondary mb-1" target="_blank" href="{{ crs.link }}">{{ crs.title }}</a>{% endfor %}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    <button class="btn btn-primary">Save Manager Review</button>
+  </div>
+</form>
+{% endif %}
+{% endblock %}

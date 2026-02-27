@@ -1,0 +1,33 @@
+{% extends 'base.html' %}
+{% block content %}
+<h3 class="mb-3">Expected Competency Levels (by Group & Grade)</h3>
+<p class="small-muted">Set expected levels & weights per competency.</p>
+<form method="get" class="row g-2 mb-3">
+  <div class="col-md-3"><label class="form-label">Group</label><select class="form-select" name="group_id">{% for g in groups %}<option value="{{ g.id }}" {% if sel_group and sel_group.id==g.id %}selected{% endif %}>{{ g.name }}</option>{% endfor %}</select></div>
+  <div class="col-md-3"><label class="form-label">Grade</label><select class="form-select" name="grade_id">{% for g in grades %}<option value="{{ g.id }}" {% if sel_grade and sel_grade.id==g.id %}selected{% endif %}>{{ g.name }}</option>{% endfor %}</select></div>
+  <div class="col-md-2 align-self-end"><button class="btn btn-secondary w-100">Load</button></div>
+</form>
+{% if sel_group and sel_grade %}
+<form method="post">
+  <input type="hidden" name="group_id" value="{{ sel_group.id }}">
+  <input type="hidden" name="grade_id" value="{{ sel_grade.id }}">
+  <div class="card p-3">
+    <table class="table table-striped">
+      <thead><tr><th>Competency</th><th>Expected Level</th><th>Weight (1–5)</th></tr></thead>
+      <tbody>
+        {% for c in competencies %}
+        <tr>
+          <td>{{ c.name }}</td>
+          <td><select class="form-select" name="expected_{{ c.id }}">{% for i in range(5) %}<option value="{{ i }}" {% if expectations.get(c.id) == i %}selected{% endif %}>L{{ i }}</option>{% endfor %}</select></td>
+          <td><select class="form-select" name="weight_{{ c.id }}">{% for w in range(1,6) %}<option value="{{ w }}" {% if weights.get(c.id,1) == w %}selected{% endif %}>{{ w }}</option>{% endfor %}</select></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    <button class="btn btn-primary">Save All</button>
+  </div>
+</form>
+{% else %}
+<div class="alert alert-info">Select a Group and Grade, then click Load.</div>
+{% endif %}
+{% endblock %}

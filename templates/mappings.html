@@ -1,0 +1,32 @@
+{% extends 'base.html' %}
+{% block content %}
+<h3 class="mb-4">Mappings</h3>
+<div class="row g-3">
+  <div class="col-md-6"><div class="card p-3">
+    <h5>Tower Skill → Competency Skill</h5>
+    <form method="post" action="{{ url_for('add_tower_comp_map') }}" class="row g-2 align-items-end">
+      <div class="col-5"><label class="form-label">Tower</label><select class="form-select" name="tower_id">{% for t in towers %}<option value="{{ t.id }}">{{ t.name }}</option>{% endfor %}</select></div>
+      <div class="col-5"><label class="form-label">Competency</label><select class="form-select" name="competency_id">{% for c in competencies %}<option value="{{ c.id }}">{{ c.name }}</option>{% endfor %}</select></div>
+      <div class="col-2"><button class="btn btn-primary w-100">Add</button></div>
+    </form>
+    <hr>
+    <table class="table table-striped"><thead><tr><th>Tower</th><th>Competency</th><th></th></tr></thead><tbody>
+      {% for m in tower_comp %}<tr><td>{{ m.tower.name }}</td><td>{{ m.competency.name }}</td><td><a class="btn btn-sm btn-danger" href="{{ url_for('del_tower_comp_map', id=m.id) }}">Remove</a></td></tr>{% endfor %}
+    </tbody></table>
+  </div></div>
+  <div class="col-md-6"><div class="card p-3">
+    <h5>Competency Skill → Group & Grade (Expectation)</h5>
+    <form method="post" action="{{ url_for('add_comp_expectation') }}" class="row g-2 align-items-end">
+      <div class="col-4"><label class="form-label">Competency</label><select class="form-select" name="competency_id">{% for c in competencies %}<option value="{{ c.id }}">{{ c.name }}</option>{% endfor %}</select></div>
+      <div class="col-3"><label class="form-label">Group</label><select class="form-select" name="group_id">{% for g in groups %}<option value="{{ g.id }}">{{ g.name }}</option>{% endfor %}</select></div>
+      <div class="col-3"><label class="form-label">Grade</label><select class="form-select" name="grade_id">{% for g in grades %}<option value="{{ g.id }}">{{ g.name }}</option>{% endfor %}</select></div>
+      <div class="col-2"><label class="form-label">Expected</label><select class="form-select" name="expected_level">{% for i in range(5) %}<option value="{{ i }}">L{{ i }}</option>{% endfor %}</select></div>
+      <div class="col-12"><button class="btn btn-primary w-100">Add / Update</button></div>
+    </form>
+    <hr>
+    <table class="table table-striped"><thead><tr><th>Competency</th><th>Group</th><th>Grade</th><th>Expected</th><th></th></tr></thead><tbody>
+      {% for e in expectations %}<tr><td>{{ e.competency.name }}</td><td>{{ e.group.name if e.group else '-' }}</td><td>{{ e.grade.name if e.grade else '-' }}</td><td>L{{ e.expected_level }}</td><td><a class="btn btn-sm btn-danger" href="{{ url_for('del_comp_expectation', id=e.id) }}">Remove</a></td></tr>{% endfor %}
+    </tbody></table>
+  </div></div>
+</div>
+{% endblock %}

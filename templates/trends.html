@@ -1,0 +1,19 @@
+{% extends 'base.html' %}
+{% block content %}
+<h3 class="mb-3">Trends</h3>
+<form method="get" class="row g-2 mb-3">
+  <div class="col-md-4"><label class="form-label">Team Member</label><select name="user_id" class="form-select">{% for u in team %}<option value="{{ u.id }}" {% if sel_user and sel_user.id==u.id %}selected{% endif %}>{{ u.full_name or u.username }}</option>{% endfor %}</select></div>
+  <div class="col-md-2 align-self-end"><button class="btn btn-secondary w-100">Load</button></div>
+</form>
+{% if sel_user %}
+<div class="row row-cols-1 row-cols-md-2 g-3">
+  {% for chart in charts %}
+  <div class="col"><div class="card p-3"><div class="small-muted">{{ chart.title }}</div><canvas id="{{ chart.id }}" height="100"></canvas></div></div>
+  {% endfor %}
+</div>
+<script>
+  const charts = {{ charts|tojson }};
+  charts.forEach(c => { const ctx = document.getElementById(c.id); new Chart(ctx, { type: 'line', data: { labels: c.labels, datasets: c.datasets }, options: { plugins: { legend: { display: true } }, elements: { line: { tension: 0.3 } } } }); });
+</script>
+{% endif %}
+{% endblock %}

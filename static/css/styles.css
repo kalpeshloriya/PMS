@@ -1,0 +1,104 @@
+body { background: #0a0f14; color: #f1f5ff; }
+.navbar { background: #0c1626; }
+a, .nav-link { color: #e6f0ff !important; }
+.card { background: #13233b; border: 1px solid #294367; }
+.table { color: #f1f5ff; }
+.table thead th { color: #e6f0ff; border-bottom: 1px solid #294367; background: #0f1d34; }
+.btn-primary { background: #2563eb; border-color: #2563eb; color: #ffffff; }
+.btn-primary:hover { background: #1e4fc0; border-color: #1e4fc0; }
+.btn-danger { background: #dc2626; border-color: #dc2626; color: #ffffff; }
+.btn-danger:hover { background: #b31f1f; border-color: #b31f1f; }
+.btn-secondary { background: #475569; border-color: #475569; color: #ffffff; }
+.btn-secondary:hover { background: #364255; border-color: #364255; }
+.form-control, .form-select { background: #0c1626; color: #f1f5ff; border: 1px solid #294367; }
+.form-control::placeholder { color: #b8c1d9; }
+hr { border-color: #294367; }
+footer, .small-muted { color: #b8c1d9; }
+.badge-gap { background: #dc2626; color: #fff; }
+.badge-ok { background: #16a34a; color: #0a0f14; }
+.table tbody tr:hover { background: #0f1d34; }
+/* ============================
+   Bootstrap table variable overrides (dark/blue theme)
+   ============================ */
+:root {
+  /* Blue palette (adjust if you like) */
+  --blue-dark:  #0f172a; /* page bg */
+  --blue-card:  #1e293b; /* table/card bg */
+  --blue-mid:   #1e40af; /* headers/nav */
+  --blue-hover: #334155; /* row hover */
+  --blue-border:#475569; /* borders */
+}
+
+/* Page/containers */
+html, body { background-color: var(--blue-dark) !important; color: #fff !important; }
+
+/* Navbar, cards, dropdowns already themed earlier; ensure text remains white */
+.navbar, .card, .dropdown-menu, footer { color: #fff !important; }
+
+/* ============================
+   TABLES: kill all white backgrounds and force dark theme
+   ============================ */
+/* 1) Tell Bootstrap what colors to use for tables */
+.table {
+  --bs-table-color:           #ffffff;
+  --bs-table-bg:              var(--blue-card);
+  --bs-table-striped-color:   #ffffff;
+  --bs-table-striped-bg:      var(--blue-hover);
+  --bs-table-hover-color:     #ffffff;
+  --bs-table-hover-bg:        var(--blue-hover);
+  color: var(--bs-table-color) !important;
+  background-color: var(--bs-table-bg) !important;
+  border-color: var(--blue-border) !important;
+}
+
+/* 2) The critical part: force every cell to inherit table/row bg & color
+   (Bootstrap sets a cell bg under some circumstances; this neutralizes it) */
+.table > :not(caption) > * > * {
+  background-color: inherit !important;
+  color: inherit !important;
+  border-color: var(--blue-border) !important;
+}
+
+/* 3) Table header row: dark blue header with white text */
+.table thead, .table thead tr, .table thead th {
+  background-color: var(--blue-mid) !important;
+  color: #ffffff !important;
+  border-color: var(--blue-border) !important;
+}
+
+/* 4) Body rows: default, striped and hover states */
+.table tbody tr {
+  background-color: var(--blue-card) !important;
+  color: #ffffff !important;
+}
+.table.table-striped > tbody > tr:nth-of-type(odd) {
+  background-color: var(--blue-hover) !important;
+  color: #ffffff !important;
+}
+.table.table-hover > tbody > tr:hover {
+  background-color: var(--blue-hover) !important;
+  color: #ffffff !important;
+}
+
+/* 5) Ensure nested elements inside cells stay white */
+.table td *, .table th * { color: #ffffff !important; }
+
+/* 6) Optional: list-group items (if you see white strips elsewhere) */
+.list-group-item {
+  background-color: var(--blue-card) !important;
+  color: #ffffff !important;
+  border-color: var(--blue-border) !important;
+}
+.list-group-item:hover {
+  background-color: var(--blue-hover) !important;
+}
+
+/* 7) Forms when they appear inside dark tables/cards */
+.card .form-control, .card .form-select,
+.table .form-control, .table .form-select {
+  background-color: #0f172a !important;
+  color: #ffffff !important;
+  border-color: var(--blue-border) !important;
+}
+.card .form-control::placeholder,
+.table .form-control::placeholder { color: rgba(255,255,255,0.75) !important; }

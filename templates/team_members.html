@@ -1,0 +1,28 @@
+{% extends 'base.html' %}
+{% block content %}
+<h3 class="mb-3">Team Members</h3>
+<div class="row">
+  <div class="col-md-5">
+    <div class="card p-3 mb-3">
+      <h5>{{ 'Edit' if item else 'Add New' }}</h5>
+      <form method="post"><div class="mb-2"><label class="form-label">Username</label><input name="username" class="form-control" value="{{ item.username if item }}"></div>
+<div class="mb-2"><label class="form-label">Full Name</label><input name="full_name" class="form-control" value="{{ item.full_name if item }}"></div>
+<div class="mb-2"><label class="form-label">Email</label><input name="email" class="form-control" value="{{ item.email if item }}"></div>
+<div class="mb-2"><label class="form-label">Is Manager (true/false)</label><input name="is_manager" class="form-control" value="{{ item.is_manager if item }}"></div>
+<div class="mb-2"><label class="form-label">App Role</label><input name="app_role" class="form-control" value="{{ item.app_role if item }}"></div>
+<div class="mb-2"><label class="form-label">Group ID</label><input name="group_id" class="form-control" value="{{ item.group_id if item }}"></div>
+<div class="mb-2"><label class="form-label">Grade ID</label><input name="grade_id" class="form-control" value="{{ item.grade_id if item }}"></div>
+<div class="mb-2"><label class="form-label">Role ID</label><input name="role_id" class="form-control" value="{{ item.role_id if item }}"></div>
+<div class="mb-2"><label class="form-label">Manager ID</label><input name="manager_id" class="form-control" value="{{ item.manager_id if item }}"></div><button class="btn btn-primary">{{ 'Update' if item else 'Create' }}</button>{% if item %} <a class="btn btn-secondary" href="{{ url_for('team_members') }}">Cancel</a>{% endif %}</form>
+    </div>
+  </div>
+  <div class="col-md-7">
+    <div class="card p-3">
+      <h5>All</h5>
+      <table class="table table-striped"><thead><tr><th>ID</th><th>Username</th><th>Full Name</th><th>Email</th><th>Is Manager (true/false)</th><th>App Role</th><th>Group ID</th><th>Grade ID</th><th>Role ID</th><th>Manager ID</th><th>Actions</th></tr></thead><tbody>
+      {% for row in rows %}<tr><td>{{ row.id }}</td><td>{{ row.username }}</td><td>{{ row.full_name }}</td><td>{{ row.email }}</td><td>{{ row.is_manager }}</td><td>{{ row.app_role }}</td><td>{{ row.group_id }}</td><td>{{ row.grade_id }}</td><td>{{ row.role_id }}</td><td>{{ row.manager_id }}</td><td><a class="btn btn-sm btn-primary" href="{{ url_for('team_members', edit_id=row.id) }}">Edit</a> <a class="btn btn-sm btn-danger" href="{{ url_for('team_members_delete', id=row.id) }}" onclick="return confirm('Delete?');">Delete</a></td></tr>{% endfor %}
+      </tbody></table>
+    </div>
+  </div>
+</div>
+{% endblock %}

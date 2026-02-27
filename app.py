@@ -1,0 +1,1203 @@
+
+from datetime import datetime, date
+from collections import defaultdict
+import io, os, csv, json
+
+from flask import Flask, render_template, request, redirect, url_for, flash, send_file
+from flask_sqlalchemy import SQLAlchemy
+from flask_login import LoginManager, login_user, login_required, logout_user, current_user, UserMixin
+from werkzeug.security import generate_password_hash, check_password_hash
+
+import requests
+try:
+    import pandas as pd
+except Exception:
+    pd = None
+try:
+    import msal
+except Exception:
+    msal = None
+
+app = Flask(__name__)
+app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY','change-me-in-production')
+app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///pms.db'
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+
+AZURE_CLIENT_ID = os.environ.get('AZURE_CLIENT_ID')
+AZURE_TENANT_ID = os.environ.get('AZURE_TENANT_ID')
+AZURE_CLIENT_SECRET = os.environ.get('AZURE_CLIENT_SECRET')
+REDIRECT_URI = os.environ.get('REDIRECT_URI', 'http://localhost:5000/auth/redirect')
+SMTP_HOST = os.environ.get('SMTP_HOST')
+SMTP_PORT = int(os.environ.get('SMTP_PORT', '587'))
+SMTP_USER = os.environ.get('SMTP_USER')
+SMTP_PASS = os.environ.get('SMTP_PASS')
+SMTP_FROM = os.environ.get('SMTP_FROM', 'no-reply@localhost')
+TEAMS_WEBHOOK_URL = os.environ.get('TEAMS_WEBHOOK_URL')
+
+
+db = SQLAlchemy(app)
+login_manager = LoginManager(app)
+login_manager.login_view = 'login'
+
+# ---- Models ----
+class Group(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(120), unique=True, nullable=False)
+    description = db.Column(db.String(255))
+
+class Grade(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(120), unique=True, nullable=False)
+    description = db.Column(db.String(255))
+
+class Role(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(120), unique=True, nullable=False)
+    description = db.Column(db.String(255))
+
+class User(UserMixin, db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    username = db.Column(db.String(80), unique=True, nullable=False)
+    password_hash = db.Column(db.String(200), nullable=False)
+    full_name = db.Column(db.String(120))
+    email = db.Column(db.String(200))
+    is_manager = db.Column(db.Boolean, default=False)
+    app_role = db.Column(db.String(40), default='EMPLOYEE')
+    group_id = db.Column(db.Integer, db.ForeignKey('group.id'))
+    grade_id = db.Column(db.Integer, db.ForeignKey('grade.id'))
+    role_id = db.Column(db.Integer, db.ForeignKey('role.id'))
+    manager_id = db.Column(db.Integer, db.ForeignKey('user.id'))
+
+    group = db.relationship('Group', foreign_keys=[group_id])
+    grade = db.relationship('Grade', foreign_keys=[grade_id])
+    role = db.relationship('Role', foreign_keys=[role_id])
+
+    def set_password(self, pw):
+        self.password_hash = generate_password_hash(pw)
+    def check_password(self, pw):
+        return check_password_hash(self.password_hash, pw)
+
+class ReviewCycle(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(120), unique=True, nullable=False)
+    start_date = db.Column(db.Date)
+    end_date = db.Column(db.Date)
+
+class TowerSkill(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(120), unique=True, nullable=False)
+    description = db.Column(db.String(255))
+
+class CompetencySkill(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(120), unique=True, nullable=False)
+    description = db.Column(db.String(255))
+
+class TowerCompetencyMap(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    tower_id = db.Column(db.Integer, db.ForeignKey('tower_skill.id'))
+    competency_id = db.Column(db.Integer, db.ForeignKey('competency_skill.id'))
+    tower = db.relationship('TowerSkill', foreign_keys=[tower_id])
+    competency = db.relationship('CompetencySkill', foreign_keys=[competency_id])
+
+class CompetencyExpectation(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    competency_id = db.Column(db.Integer, db.ForeignKey('competency_skill.id'), nullable=False)
+    group_id = db.Column(db.Integer, db.ForeignKey('group.id'))
+    grade_id = db.Column(db.Integer, db.ForeignKey('grade.id'))
+    expected_level = db.Column(db.Integer, default=0)
+    weight = db.Column(db.Integer, default=1)
+
+    competency = db.relationship('CompetencySkill', foreign_keys=[competency_id])
+    group = db.relationship('Group', foreign_keys=[group_id])
+    grade = db.relationship('Grade', foreign_keys=[grade_id])
+
+class Course(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    title = db.Column(db.String(200), nullable=False)
+    competency_id = db.Column(db.Integer, db.ForeignKey('competency_skill.id'))
+    min_level = db.Column(db.Integer, default=0)
+    external_id = db.Column(db.String(120))
+    url = db.Column(db.String(500))
+    competency = db.relationship('CompetencySkill', foreign_keys=[competency_id])
+
+class SelfEvaluation(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'))
+    competency_id = db.Column(db.Integer, db.ForeignKey('competency_skill.id'))
+    cycle_id = db.Column(db.Integer, db.ForeignKey('review_cycle.id'))
+    level = db.Column(db.Integer, default=0)
+    comment = db.Column(db.Text)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+class ManagerEvaluation(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'))
+    manager_id = db.Column(db.Integer, db.ForeignKey('user.id'))
+    competency_id = db.Column(db.Integer, db.ForeignKey('competency_skill.id'))
+    cycle_id = db.Column(db.Integer, db.ForeignKey('review_cycle.id'))
+    level = db.Column(db.Integer, default=0)
+    comment = db.Column(db.Text)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+class ManagerCalibration(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'))
+    competency_id = db.Column(db.Integer, db.ForeignKey('competency_skill.id'))
+    cycle_id = db.Column(db.Integer, db.ForeignKey('review_cycle.id'))
+    calibrated_level = db.Column(db.Integer, default=0)
+    note = db.Column(db.String(500))
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+class AuditLog(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    actor_id = db.Column(db.Integer, db.ForeignKey('user.id'))
+    action = db.Column(db.String(120))
+    entity = db.Column(db.String(120))
+    entity_id = db.Column(db.Integer)
+    before_json = db.Column(db.Text)
+    after_json = db.Column(db.Text)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+@login_manager.user_loader
+def load_user(user_id):
+    return db.session.get(User, int(user_id))
+
+# RBAC
+from functools import wraps
+
+def require_roles(*roles):
+    def decorator(fn):
+        @wraps(fn)
+        def wrapper(*args, **kwargs):
+            if not current_user.is_authenticated:
+                return login_manager.unauthorized()
+            if current_user.app_role not in roles and current_user.app_role != 'ADMIN':
+                flash('Access denied', 'danger')
+                return redirect(url_for('index'))
+            return fn(*args, **kwargs)
+        return wrapper
+    return decorator
+
+# Seed
+
+def seed_once():
+    if User.query.first():
+        return
+    g = Group(name='Default Group')
+    gr = Grade(name='G1')
+    r = Role(name='Engineer')
+    db.session.add_all([g, gr, r])
+    db.session.commit()
+
+    admin = User(username='admin', full_name='System Administrator', email='admin@example.com', is_manager=False, app_role='ADMIN')
+    admin.set_password('Password123!')
+    db.session.add(admin)
+
+    m = User(username='manager', full_name='Default Manager', email='manager@example.com', is_manager=True, app_role='MANAGER', group_id=g.id, grade_id=gr.id, role_id=r.id)
+    m.set_password('Password123!')
+    db.session.add(m)
+
+    e = User(username='employee', full_name='Default Employee', email='employee@example.com', is_manager=False, app_role='EMPLOYEE', group_id=g.id, grade_id=gr.id, role_id=r.id)
+    e.set_password('Password123!')
+    db.session.add(e)
+    db.session.commit()
+
+    e.manager_id = m.id
+    db.session.commit()
+
+    rc = ReviewCycle(name='FY2026 Q1', start_date=date(2026,1,1), end_date=date(2026,3,31))
+    db.session.add(rc)
+
+    t1 = TowerSkill(name='Cloud', description='Cloud Tower')
+    t2 = TowerSkill(name='Data', description='Data Tower')
+    c1 = CompetencySkill(name='AWS', description='Amazon Web Services')
+    c2 = CompetencySkill(name='Azure', description='Microsoft Azure')
+    c3 = CompetencySkill(name='SQL', description='Structured Query Language')
+    db.session.add_all([t1, t2, c1, c2, c3])
+    db.session.commit()
+
+    db.session.add_all([
+        TowerCompetencyMap(tower_id=t1.id, competency_id=c1.id),
+        TowerCompetencyMap(tower_id=t1.id, competency_id=c2.id),
+        TowerCompetencyMap(tower_id=t2.id, competency_id=c3.id),
+    ])
+
+    for comp in [c1, c2, c3]:
+        db.session.add(CompetencyExpectation(competency_id=comp.id, group_id=g.id, grade_id=gr.id, expected_level=2, weight=3))
+
+    db.session.add_all([
+        Course(title='AWS Cloud Practitioner', competency_id=c1.id, min_level=1, url='https://example.com/aws-cp'),
+        Course(title='Azure Fundamentals', competency_id=c2.id, min_level=1, url='https://example.com/az-900'),
+        Course(title='SQL Basics', competency_id=c3.id, min_level=1, url='https://example.com/sql-basics'),
+    ])
+    db.session.commit()
+
+# Helpers
+
+def log_audit(action, entity, entity_id=None, before=None, after=None):
+    try:
+        db.session.add(AuditLog(actor_id=(current_user.id if current_user and current_user.is_authenticated else None), action=action, entity=entity, entity_id=entity_id, before_json=json.dumps(before) if before else None, after_json=json.dumps(after) if after else None))
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+
+def current_cycle():
+    return ReviewCycle.query.order_by(ReviewCycle.start_date.desc().nullslast()).first()
+
+def current_expectations_for(user):
+    if not user or not user.group_id or not user.grade_id:
+        return {}
+    rows = CompetencyExpectation.query.filter_by(group_id=user.group_id, grade_id=user.grade_id).all()
+    return {r.competency_id: (r.expected_level, r.weight) for r in rows}
+
+def latest_self_levels(user_id):
+    sub = db.session.query(SelfEvaluation.competency_id, db.func.max(SelfEvaluation.created_at).label('mx')).filter_by(user_id=user_id).group_by(SelfEvaluation.competency_id).subquery()
+    rows = db.session.query(SelfEvaluation).join(sub, (SelfEvaluation.competency_id==sub.c.competency_id) & (SelfEvaluation.created_at==sub.c.mx)).all()
+    return {r.competency_id: (r.level, r.cycle_id) for r in rows}
+
+def latest_manager_levels(user_id):
+    sub = db.session.query(ManagerEvaluation.competency_id, db.func.max(ManagerEvaluation.created_at).label('mx')).filter_by(user_id=user_id).group_by(ManagerEvaluation.competency_id).subquery()
+    rows = db.session.query(ManagerEvaluation).join(sub, (ManagerEvaluation.competency_id==sub.c.competency_id) & (ManagerEvaluation.created_at==sub.c.mx)).all()
+    return {r.competency_id: (r.level, r.cycle_id) for r in rows}
+
+def latest_self_details(user_id):
+    sub = db.session.query(SelfEvaluation.competency_id, db.func.max(SelfEvaluation.created_at).label('mx')).filter_by(user_id=user_id).group_by(SelfEvaluation.competency_id).subquery()
+    rows = db.session.query(SelfEvaluation).join(sub, (SelfEvaluation.competency_id==sub.c.competency_id) & (SelfEvaluation.created_at==sub.c.mx)).all()
+    out = {}
+    for r in rows:
+        out[r.competency_id] = {'level': r.level, 'comment': r.comment, 'cycle_id': r.cycle_id}
+    return out
+
+def recommend_courses(competency_id, required_level):
+    rows = Course.query.filter_by(competency_id=competency_id).order_by(Course.min_level.desc()).all()
+    out = []
+    for r in rows:
+        link = r.url
+        if not link and r.external_id:
+            base = os.environ.get('LMS_BASE_URL')
+            if base:
+                link = f"{base.rstrip('/')}/course/{r.external_id}"
+        out.append({'title': r.title, 'link': link or '#', 'min_level': r.min_level})
+    return out
+
+# Notifications
+import smtplib
+from email.message import EmailMessage
+
+def send_email(to, subject, body):
+    if not SMTP_HOST or not to:
+        return False
+    try:
+        msg = EmailMessage()
+        msg['From'] = SMTP_FROM
+        msg['To'] = to
+        msg['Subject'] = subject
+        msg.set_content(body)
+        with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as s:
+            s.starttls()
+            if SMTP_USER:
+                s.login(SMTP_USER, SMTP_PASS)
+            s.send_message(msg)
+        return True
+    except Exception:
+        return False
+
+
+def send_teams_card(title, text):
+    if not TEAMS_WEBHOOK_URL:
+        return False
+    try:
+        payload = {"text": "**" + str(title) + "**\n\n" + str(text)}
+        requests.post(TEAMS_WEBHOOK_URL, json=payload, timeout=5)
+        return True
+    except Exception:
+        return False
+
+
+@app.route('/login', methods=['GET','POST'])
+def login():
+    if request.method == 'POST':
+        user = User.query.filter_by(username=request.form['username']).first()
+        if user and user.check_password(request.form['password']):
+            login_user(user)
+            if user.app_role == 'ADMIN':
+                return redirect(url_for('team_members'))
+            return redirect(url_for('dashboard' if user.is_manager else 'self_review'))
+        flash('Invalid credentials', 'danger')
+    return render_template('login.html')
+
+@app.route('/login/admin', methods=['GET','POST'])
+def login_admin():
+    if request.method == 'POST':
+        username = request.form['username']
+        password = request.form['password']
+        user = User.query.filter_by(username=username).first()
+        if user and user.check_password(password) and user.app_role == 'ADMIN':
+            login_user(user)
+            return redirect(url_for('team_members'))
+        flash('Admin access only (role=ADMIN).', 'danger')
+    return render_template('login_admin.html')
+
+@app.route('/login/sso')
+def login_sso():
+    if not (AZURE_CLIENT_ID and AZURE_TENANT_ID) or not msal:
+        flash('SSO not configured', 'warning')
+        return redirect(url_for('login'))
+    auth_app = msal.ConfidentialClientApplication(AZURE_CLIENT_ID, authority=f"https://login.microsoftonline.com/{AZURE_TENANT_ID}", client_credential=AZURE_CLIENT_SECRET)
+    auth_url = auth_app.get_authorization_request_url(scopes=['User.Read'], redirect_uri=REDIRECT_URI)
+    return redirect(auth_url)
+
+@app.route('/auth/redirect')
+def auth_redirect():
+    if not msal:
+        return redirect(url_for('login'))
+    code = request.args.get('code')
+    if not code:
+        flash('SSO failed: no code', 'danger')
+        return redirect(url_for('login'))
+    auth_app = msal.ConfidentialClientApplication(AZURE_CLIENT_ID, authority=f"https://login.microsoftonline.com/{AZURE_TENANT_ID}", client_credential=AZURE_CLIENT_SECRET)
+    token = auth_app.acquire_token_by_authorization_code(code, scopes=['User.Read'], redirect_uri=REDIRECT_URI)
+    if 'id_token_claims' in token:
+        claims = token['id_token_claims']
+        upn = claims.get('preferred_username') or claims.get('email')
+        name = claims.get('name')
+        user = User.query.filter((User.email==upn) | (User.username==upn)).first()
+        if not user:
+            user = User(username=upn, email=upn, full_name=name, is_manager=False, app_role='EMPLOYEE')
+            user.set_password(os.urandom(8).hex())
+            db.session.add(user)
+            db.session.commit()
+        login_user(user)
+        return redirect(url_for('index'))
+    flash('SSO token error', 'danger')
+    return redirect(url_for('login'))
+
+@app.route('/logout')
+@login_required
+def logout():
+    logout_user()
+    return redirect(url_for('login'))
+
+@app.route('/')
+@login_required
+def index():
+    if current_user.app_role == 'ADMIN':
+        return redirect(url_for('team_members'))
+    return redirect(url_for('dashboard' if current_user.is_manager else 'self_review'))
+
+# Dashboard (Manager)
+@app.route('/dashboard')
+@login_required
+def dashboard():
+    if current_user.is_manager:
+        team = User.query.filter_by(manager_id=current_user.id).all()
+        open_gaps = 0
+        total_weighted_gap = 0
+        gap_buckets = {'>2':0, '1-2':0, '0':0}
+        skill_gap_counts = defaultdict(int)
+        for u in team:
+            exp = current_expectations_for(u)
+            comps = CompetencySkill.query.filter(CompetencySkill.id.in_(list(exp.keys()))).all()
+            man = {k:v[0] for k,v in (latest_manager_levels(u.id) or {}).items()}
+            self_lvls = {k:v[0] for k,v in (latest_self_levels(u.id) or {}).items()}
+            for c in comps:
+                expected, weight = exp.get(c.id, (0,1))
+                actual = man.get(c.id, self_lvls.get(c.id, 0))
+                gap = max(expected - (actual or 0), 0)
+                weighted = gap * (weight or 1)
+                if gap > 0:
+                    open_gaps += 1
+                    skill_gap_counts[c.name] += 1
+                total_weighted_gap += weighted
+                if gap == 0: gap_buckets['0'] += 1
+                elif gap <= 2: gap_buckets['1-2'] += 1
+                else: gap_buckets['>2'] += 1
+        skill_counts = sum(len(current_expectations_for(u)) for u in team) or 1
+        kpis = {'team_members': len(team), 'skills_assessed': skill_counts, 'open_gaps': open_gaps, 'avg_gap': total_weighted_gap / skill_counts}
+        top = sorted(skill_gap_counts.items(), key=lambda x: x[1], reverse=True)[:10]
+        charts = {'top_gaps': {'labels': [t[0] for t in top], 'data': [t[1] for t in top]}, 'gap_distribution': {'labels': list(gap_buckets.keys()), 'data': list(gap_buckets.values())}}
+        return render_template('dashboard.html', kpis=kpis, charts=charts)
+    elif current_user.app_role == 'ADMIN':
+        return redirect(url_for('team_members'))
+    else:
+        return redirect(url_for('self_review'))
+
+# Admin CRUD (ADMIN only)
+
+def parse_bool(val):
+    return str(val).lower() in ('1','true','yes','y','on')
+
+@app.route('/admin/team', methods=['GET','POST'])
+@login_required
+@require_roles('ADMIN')
+def team_members():
+    edit_id = request.args.get('edit_id', type=int)
+    item = User.query.get(edit_id) if edit_id else None
+    if request.method == 'POST':
+        data = request.form
+        if item is None:
+            item = User(username=data['username'])
+            item.set_password('Password123!')
+            db.session.add(item)
+        before = item.__dict__.copy()
+        item.full_name = data.get('full_name')
+        item.email = data.get('email')
+        item.is_manager = parse_bool(data.get('is_manager','false'))
+        item.app_role = data.get('app_role') or item.app_role
+        item.group_id = int(data['group_id']) if data.get('group_id') else None
+        item.grade_id = int(data['grade_id']) if data.get('grade_id') else None
+        item.role_id = int(data['role_id']) if data.get('role_id') else None
+        item.manager_id = int(data['manager_id']) if data.get('manager_id') else None
+        db.session.commit()
+        log_audit('UPSERT','User', item.id, before=before, after=item.__dict__)
+        flash('Saved team member', 'success')
+        return redirect(url_for('team_members'))
+    rows = User.query.order_by(User.id).all()
+    return render_template('team_members.html', rows=rows, item=item)
+
+@app.route('/admin/team/delete/<int:id>')
+@login_required
+@require_roles('ADMIN')
+def team_members_delete(id):
+    u = User.query.get_or_404(id)
+    before = u.__dict__.copy()
+    db.session.delete(u)
+    db.session.commit()
+    log_audit('DELETE','User', id, before=before)
+    flash('Deleted', 'success')
+    return redirect(url_for('team_members'))
+
+@app.route('/admin/groups', methods=['GET','POST'])
+@login_required
+@require_roles('ADMIN')
+def groups():
+    edit_id = request.args.get('edit_id', type=int)
+    item = Group.query.get(edit_id) if edit_id else None
+    if request.method == 'POST':
+        name = request.form['name']
+        desc = request.form.get('description')
+        if item is None:
+            item = Group(name=name, description=desc)
+            db.session.add(item)
+        else:
+            item.name = name
+            item.description = desc
+        db.session.commit()
+        log_audit('UPSERT','Group', item.id, after=item.__dict__)
+        flash('Saved group', 'success')
+        return redirect(url_for('groups'))
+    rows = Group.query.order_by(Group.id).all()
+    return render_template('groups.html', rows=rows, item=item)
+
+@app.route('/admin/groups/delete/<int:id>')
+@login_required
+@require_roles('ADMIN')
+def groups_delete(id):
+    r = Group.query.get_or_404(id)
+    before = r.__dict__.copy()
+    db.session.delete(r)
+    db.session.commit()
+    log_audit('DELETE','Group', id, before=before)
+    flash('Deleted', 'success')
+    return redirect(url_for('groups'))
+
+@app.route('/admin/grades', methods=['GET','POST'])
+@login_required
+@require_roles('ADMIN')
+def grades():
+    edit_id = request.args.get('edit_id', type=int)
+    item = Grade.query.get(edit_id) if edit_id else None
+    if request.method == 'POST':
+        name = request.form['name']
+        desc = request.form.get('description')
+        if item is None:
+            item = Grade(name=name, description=desc)
+            db.session.add(item)
+        else:
+            item.name = name
+            item.description = desc
+        db.session.commit()
+        log_audit('UPSERT','Grade', item.id, after=item.__dict__)
+        flash('Saved grade', 'success')
+        return redirect(url_for('grades'))
+    rows = Grade.query.order_by(Grade.id).all()
+    return render_template('grades.html', rows=rows, item=item)
+
+@app.route('/admin/grades/delete/<int:id>')
+@login_required
+@require_roles('ADMIN')
+def grades_delete(id):
+    r = Grade.query.get_or_404(id)
+    before = r.__dict__.copy()
+    db.session.delete(r)
+    db.session.commit()
+    log_audit('DELETE','Grade', id, before=before)
+    flash('Deleted', 'success')
+    return redirect(url_for('grades'))
+
+@app.route('/admin/roles', methods=['GET','POST'])
+@login_required
+@require_roles('ADMIN')
+def roles():
+    edit_id = request.args.get('edit_id', type=int)
+    item = Role.query.get(edit_id) if edit_id else None
+    if request.method == 'POST':
+        name = request.form['name']
+        desc = request.form.get('description')
+        if item is None:
+            item = Role(name=name, description=desc)
+            db.session.add(item)
+        else:
+            item.name = name
+            item.description = desc
+        db.session.commit()
+        log_audit('UPSERT','Role', item.id, after=item.__dict__)
+        flash('Saved role', 'success')
+        return redirect(url_for('roles'))
+    rows = Role.query.order_by(Role.id).all()
+    return render_template('roles.html', rows=rows, item=item)
+
+@app.route('/admin/roles/delete/<int:id>')
+@login_required
+@require_roles('ADMIN')
+def roles_delete(id):
+    r = Role.query.get_or_404(id)
+    before = r.__dict__.copy()
+    db.session.delete(r)
+    db.session.commit()
+    log_audit('DELETE','Role', id, before=before)
+    flash('Deleted', 'success')
+    return redirect(url_for('roles'))
+
+@app.route('/admin/tower-skills', methods=['GET','POST'])
+@login_required
+@require_roles('ADMIN')
+def tower_skills():
+    edit_id = request.args.get('edit_id', type=int)
+    item = TowerSkill.query.get(edit_id) if edit_id else None
+    if request.method == 'POST':
+        name = request.form['name']
+        desc = request.form.get('description')
+        if item is None:
+            item = TowerSkill(name=name, description=desc)
+            db.session.add(item)
+        else:
+            item.name = name
+            item.description = desc
+        db.session.commit()
+        log_audit('UPSERT','TowerSkill', item.id, after=item.__dict__)
+        flash('Saved tower skill', 'success')
+        return redirect(url_for('tower_skills'))
+    rows = TowerSkill.query.order_by(TowerSkill.id).all()
+    return render_template('tower_skills.html', rows=rows, item=item)
+
+@app.route('/admin/tower-skills/delete/<int:id>')
+@login_required
+@require_roles('ADMIN')
+def tower_skills_delete(id):
+    r = TowerSkill.query.get_or_404(id)
+    before = r.__dict__.copy()
+    db.session.delete(r)
+    db.session.commit()
+    log_audit('DELETE','TowerSkill', id, before=before)
+    flash('Deleted', 'success')
+    return redirect(url_for('tower_skills'))
+
+@app.route('/admin/competency-skills', methods=['GET','POST'])
+@login_required
+@require_roles('ADMIN')
+def competency_skills():
+    edit_id = request.args.get('edit_id', type=int)
+    item = CompetencySkill.query.get(edit_id) if edit_id else None
+    if request.method == 'POST':
+        name = request.form['name']
+        desc = request.form.get('description')
+        if item is None:
+            item = CompetencySkill(name=name, description=desc)
+            db.session.add(item)
+        else:
+            item.name = name
+            item.description = desc
+        db.session.commit()
+        log_audit('UPSERT','CompetencySkill', item.id, after=item.__dict__)
+        flash('Saved competency', 'success')
+        return redirect(url_for('competency_skills'))
+    rows = CompetencySkill.query.order_by(CompetencySkill.id).all()
+    return render_template('competency_skills.html', rows=rows, item=item)
+
+@app.route('/admin/competency-skills/delete/<int:id>')
+@login_required
+@require_roles('ADMIN')
+def competency_skills_delete(id):
+    r = CompetencySkill.query.get_or_404(id)
+    before = r.__dict__.copy()
+    db.session.delete(r)
+    db.session.commit()
+    log_audit('DELETE','CompetencySkill', id, before=before)
+    flash('Deleted', 'success')
+    return redirect(url_for('competency_skills'))
+
+@app.route('/admin/mappings')
+@login_required
+@require_roles('ADMIN')
+def mappings():
+    towers = TowerSkill.query.all()
+    competencies = CompetencySkill.query.all()
+    tower_comp = TowerCompetencyMap.query.all()
+    groups = Group.query.all()
+    grades = Grade.query.all()
+    expectations = CompetencyExpectation.query.all()
+    return render_template('mappings.html', towers=towers, competencies=competencies, tower_comp=tower_comp, groups=groups, grades=grades, expectations=expectations)
+
+@app.route('/admin/mappings/tower-comp', methods=['POST'])
+@login_required
+@require_roles('ADMIN')
+def add_tower_comp_map():
+    tower_id = int(request.form['tower_id'])
+    competency_id = int(request.form['competency_id'])
+    if not TowerCompetencyMap.query.filter_by(tower_id=tower_id, competency_id=competency_id).first():
+        db.session.add(TowerCompetencyMap(tower_id=tower_id, competency_id=competency_id))
+        db.session.commit()
+        log_audit('UPSERT','TowerCompetencyMap', None, after={'tower_id':tower_id,'competency_id':competency_id})
+        flash('Mapping added', 'success')
+    return redirect(url_for('mappings'))
+
+@app.route('/admin/mappings/tower-comp/delete/<int:id>')
+@login_required
+@require_roles('ADMIN')
+def del_tower_comp_map(id):
+    m = TowerCompetencyMap.query.get_or_404(id)
+    before = {'tower_id': m.tower_id, 'competency_id': m.competency_id}
+    db.session.delete(m)
+    db.session.commit()
+    log_audit('DELETE','TowerCompetencyMap', id, before=before)
+    flash('Mapping removed', 'success')
+    return redirect(url_for('mappings'))
+
+@app.route('/admin/mappings/expectation', methods=['POST'])
+@login_required
+@require_roles('ADMIN')
+def add_comp_expectation():
+    competency_id = int(request.form['competency_id'])
+    group_id = int(request.form['group_id']) if request.form.get('group_id') else None
+    grade_id = int(request.form['grade_id']) if request.form.get('grade_id') else None
+    expected_level = int(request.form['expected_level'])
+
+    q = CompetencyExpectation.query.filter_by(competency_id=competency_id, group_id=group_id, grade_id=grade_id).first()
+    if q:
+        before = q.__dict__.copy()
+        q.expected_level = expected_level
+        db.session.commit()
+        log_audit('UPSERT','CompetencyExpectation', q.id, before=before, after=q.__dict__)
+    else:
+        ce = CompetencyExpectation(competency_id=competency_id, group_id=group_id, grade_id=grade_id, expected_level=expected_level)
+        db.session.add(ce)
+        db.session.commit()
+        log_audit('UPSERT','CompetencyExpectation', ce.id, after=ce.__dict__)
+    flash('Expectation saved', 'success')
+    return redirect(url_for('mappings'))
+
+@app.route('/admin/mappings/expectation/delete/<int:id>')
+@login_required
+@require_roles('ADMIN')
+def del_comp_expectation(id):
+    e = CompetencyExpectation.query.get_or_404(id)
+    before = e.__dict__.copy()
+    db.session.delete(e)
+    db.session.commit()
+    log_audit('DELETE','CompetencyExpectation', id, before=before)
+    flash('Expectation removed', 'success')
+    return redirect(url_for('mappings'))
+
+@app.route('/admin/expected-levels', methods=['GET','POST'])
+@login_required
+@require_roles('ADMIN')
+def expected_levels():
+    groups = Group.query.all()
+    grades = Grade.query.all()
+    if request.method == 'POST':
+        group_id = int(request.form['group_id'])
+        grade_id = int(request.form['grade_id'])
+        competencies = CompetencySkill.query.all()
+        for c in competencies:
+            val = request.form.get(f'expected_{c.id}')
+            if val is None: continue
+            val = int(val)
+            weight = int(request.form.get(f'weight_{c.id}', '1'))
+            e = CompetencyExpectation.query.filter_by(competency_id=c.id, group_id=group_id, grade_id=grade_id).first()
+            if e:
+                before = e.__dict__.copy()
+                e.expected_level = val
+                e.weight = weight
+                db.session.commit()
+                log_audit('UPSERT','CompetencyExpectation', e.id, before=before, after=e.__dict__)
+            else:
+                e = CompetencyExpectation(competency_id=c.id, group_id=group_id, grade_id=grade_id, expected_level=val, weight=weight)
+                db.session.add(e)
+                db.session.commit()
+                log_audit('UPSERT','CompetencyExpectation', e.id, after=e.__dict__)
+        flash('Expected levels saved', 'success')
+        return redirect(url_for('expected_levels', group_id=group_id, grade_id=grade_id))
+
+    group_id = request.args.get('group_id', type=int)
+    grade_id = request.args.get('grade_id', type=int)
+    sel_group = db.session.get(Group, group_id) if group_id else None
+    sel_grade = db.session.get(Grade, grade_id) if grade_id else None
+
+    competencies = CompetencySkill.query.all()
+    expectations = {}
+    weights = {}
+    if sel_group and sel_grade:
+        rows = CompetencyExpectation.query.filter_by(group_id=sel_group.id, grade_id=sel_grade.id).all()
+        expectations = {r.competency_id: r.expected_level for r in rows}
+        weights = {r.competency_id: (r.weight or 1) for r in rows}
+
+    return render_template('expected_levels.html', groups=groups, grades=grades, sel_group=sel_group, sel_grade=sel_grade, competencies=competencies, expectations=expectations, weights=weights)
+
+# Import / Export (ADMIN)
+@app.route('/admin/import-export', methods=['GET','POST'])
+@login_required
+@require_roles('ADMIN')
+def import_export():
+    exports = [
+        ('users','Users'), ('groups','Groups'), ('grades','Grades'), ('roles','Roles'), ('towers','Tower Skills'),
+        ('competencies','Competency Skills'), ('tower_comp','Tower→Competency Map'), ('expectations','Competency Expectations'),
+        ('courses','Courses'), ('self_reviews','Self Evaluations'), ('manager_reviews','Manager Evaluations')
+    ]
+    if request.method == 'POST':
+        entity = request.form['entity']
+        f = request.files['file']
+        data = f.read()
+        if f.filename.lower().endswith('.xlsx') and pd is not None:
+            df = pd.read_excel(io.BytesIO(data), engine='openpyxl')
+            rows = df.to_dict(orient='records')
+        else:
+            s = data.decode('utf-8')
+            reader = csv.DictReader(io.StringIO(s))
+            rows = list(reader)
+        cnt = import_rows(entity, rows)
+        flash(f'Imported {cnt} rows into {entity}', 'success')
+        return redirect(url_for('import_export'))
+    return render_template('import_export.html', exports=exports)
+
+@app.route('/admin/export/<entity>.<fmt>')
+@login_required
+@require_roles('ADMIN')
+def export_data(entity, fmt):
+    rows, headers = export_rows(entity)
+    filename = f'{entity}.{fmt}'
+    if fmt == 'xlsx' and pd is not None:
+        buf = io.BytesIO()
+        pd.DataFrame(rows).to_excel(buf, index=False, engine='openpyxl')
+        buf.seek(0)
+        return send_file(buf, as_attachment=True, download_name=filename, mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+    buf = io.StringIO()
+    writer = csv.DictWriter(buf, fieldnames=headers)
+    writer.writeheader()
+    for r in rows:
+        writer.writerow(r)
+    buf.seek(0)
+    return send_file(io.BytesIO(buf.getvalue().encode('utf-8')), as_attachment=True, download_name=f'{entity}.csv', mimetype='text/csv')
+
+
+def export_rows(entity):
+    if entity == 'users':
+        rows = [{'id':u.id,'username':u.username,'full_name':u.full_name,'email':u.email,'app_role':u.app_role,'is_manager':u.is_manager,'group_id':u.group_id,'grade_id':u.grade_id,'role_id':u.role_id,'manager_id':u.manager_id} for u in User.query.all()]
+        return rows, list(rows[0].keys()) if rows else ['id','username','full_name','email','app_role','is_manager','group_id','grade_id','role_id','manager_id']
+    if entity == 'groups':
+        rows = [{'id':g.id,'name':g.name,'description':g.description} for g in Group.query.all()]
+        return rows, list(rows[0].keys()) if rows else ['id','name','description']
+    if entity == 'grades':
+        rows = [{'id':g.id,'name':g.name,'description':g.description} for g in Grade.query.all()]
+        return rows, list(rows[0].keys()) if rows else ['id','name','description']
+    if entity == 'roles':
+        rows = [{'id':r.id,'name':r.name,'description':r.description} for r in Role.query.all()]
+        return rows, list(rows[0].keys()) if rows else ['id','name','description']
+    if entity == 'towers':
+        rows = [{'id':t.id,'name':t.name,'description':t.description} for t in TowerSkill.query.all()]
+        return rows, list(rows[0].keys()) if rows else ['id','name','description']
+    if entity == 'competencies':
+        rows = [{'id':c.id,'name':c.name,'description':c.description} for c in CompetencySkill.query.all()]
+        return rows, list(rows[0].keys()) if rows else ['id','name','description']
+    if entity == 'tower_comp':
+        rows = [{'id':m.id,'tower_id':m.tower_id,'competency_id':m.competency_id} for m in TowerCompetencyMap.query.all()]
+        return rows, list(rows[0].keys()) if rows else ['id','tower_id','competency_id']
+    if entity == 'expectations':
+        rows = [{'id':e.id,'competency_id':e.competency_id,'group_id':e.group_id,'grade_id':e.grade_id,'expected_level':e.expected_level,'weight':e.weight} for e in CompetencyExpectation.query.all()]
+        return rows, list(rows[0].keys()) if rows else ['id','competency_id','group_id','grade_id','expected_level','weight']
+    if entity == 'courses':
+        rows = [{'id':c.id,'title':c.title,'competency_id':c.competency_id,'min_level':c.min_level,'external_id':c.external_id,'url':c.url} for c in Course.query.all()]
+        return rows, list(rows[0].keys()) if rows else ['id','title','competency_id','min_level','external_id','url']
+    if entity == 'self_reviews':
+        rows = [{'id':r.id,'user_id':r.user_id,'competency_id':r.competency_id,'cycle_id':r.cycle_id,'level':r.level,'comment':r.comment,'created_at':r.created_at} for r in SelfEvaluation.query.all()]
+        return rows, list(rows[0].keys()) if rows else ['id','user_id','competency_id','cycle_id','level','comment','created_at']
+    if entity == 'manager_reviews':
+        rows = [{'id':r.id,'user_id':r.user_id,'manager_id':r.manager_id,'competency_id':r.competency_id,'cycle_id':r.cycle_id,'level':r.level,'comment':r.comment,'created_at':r.created_at} for r in ManagerEvaluation.query.all()]
+        return rows, list(rows[0].keys()) if rows else ['id','user_id','manager_id','competency_id','cycle_id','level','comment','created_at']
+    return [], []
+
+
+def import_rows(entity, rows):
+    cnt = 0
+    for r in rows:
+        try:
+            if entity == 'users':
+                u = User(username=r['username'])
+                u.full_name = r.get('full_name')
+                u.email = r.get('email')
+                u.app_role = r.get('app_role','EMPLOYEE')
+                u.is_manager = str(r.get('is_manager','')).lower() in ('1','true','yes','y')
+                u.group_id = int(r['group_id']) if r.get('group_id') else None
+                u.grade_id = int(r['grade_id']) if r.get('grade_id') else None
+                u.role_id = int(r['role_id']) if r.get('role_id') else None
+                u.manager_id = int(r['manager_id']) if r.get('manager_id') else None
+                u.set_password('Password123!')
+                db.session.add(u)
+            elif entity == 'groups':
+                db.session.add(Group(name=r['name'], description=r.get('description')))
+            elif entity == 'grades':
+                db.session.add(Grade(name=r['name'], description=r.get('description')))
+            elif entity == 'roles':
+                db.session.add(Role(name=r['name'], description=r.get('description')))
+            elif entity == 'towers':
+                db.session.add(TowerSkill(name=r['name'], description=r.get('description')))
+            elif entity == 'competencies':
+                db.session.add(CompetencySkill(name=r['name'], description=r.get('description')))
+            elif entity == 'tower_comp':
+                db.session.add(TowerCompetencyMap(tower_id=int(r['tower_id']), competency_id=int(r['competency_id'])))
+            elif entity == 'expectations':
+                db.session.add(CompetencyExpectation(competency_id=int(r['competency_id']), group_id=int(r['group_id']) if r.get('group_id') else None, grade_id=int(r['grade_id']) if r.get('grade_id') else None, expected_level=int(r['expected_level']), weight=int(r.get('weight',1))))
+            elif entity == 'courses':
+                db.session.add(Course(title=r['title'], competency_id=int(r['competency_id']) if r.get('competency_id') else None, min_level=int(r.get('min_level',0)), external_id=r.get('external_id'), url=r.get('url')))
+            elif entity == 'self_reviews':
+                from datetime import datetime as _dt
+                created_at = _dt.fromisoformat(r.get('created_at')) if r.get('created_at') else datetime.utcnow()
+                db.session.add(SelfEvaluation(user_id=int(r['user_id']), competency_id=int(r['competency_id']), cycle_id=int(r['cycle_id']) if r.get('cycle_id') else None, level=int(r['level']), comment=r.get('comment'), created_at=created_at))
+            elif entity == 'manager_reviews':
+                from datetime import datetime as _dt
+                created_at = _dt.fromisoformat(r.get('created_at')) if r.get('created_at') else datetime.utcnow()
+                db.session.add(ManagerEvaluation(user_id=int(r['user_id']), manager_id=int(r['manager_id']) if r.get('manager_id') else None, competency_id=int(r['competency_id']), cycle_id=int(r['cycle_id']) if r.get('cycle_id') else None, level=int(r['level']), comment=r.get('comment'), created_at=created_at))
+            cnt += 1
+        except Exception:
+            db.session.rollback()
+            continue
+    db.session.commit()
+    return cnt
+
+# Reviews
+@app.route('/review/self', methods=['GET','POST'])
+@login_required
+def self_review():
+    user = current_user
+    if getattr(user, 'is_manager', False):
+        return redirect(url_for('manager_review'))
+
+    exp_map = current_expectations_for(user)
+    comp_ids = list(exp_map.keys())
+    competencies = CompetencySkill.query.filter(CompetencySkill.id.in_(comp_ids)).all() if comp_ids else []
+    cycles = ReviewCycle.query.order_by(ReviewCycle.start_date.desc().nullslast()).all()
+    sel_cycle_id = request.values.get('cycle_id', type=int) or (current_cycle().id if current_cycle() else None)
+
+    if request.method == 'POST':
+        saved_any = False
+        for c in competencies:
+            val = request.form.get(f'comp_{c.id}')
+            cmt = request.form.get(f'cmt_{c.id}', '').strip()
+            if val is None:
+                continue
+            db.session.add(SelfEvaluation(
+                user_id=user.id, competency_id=c.id,
+                level=int(val), cycle_id=sel_cycle_id, comment=(cmt or None)
+            ))
+            saved_any = True
+
+        if saved_any:
+            db.session.commit()
+            log_audit('UPSERT','SelfEvaluation', None, after={'user_id':user.id,'cycle_id':sel_cycle_id})
+
+            mgr = db.session.get(User, getattr(user, 'manager_id', None)) if getattr(user, 'manager_id', None) else None
+            if mgr and getattr(mgr, 'email', None):
+                emp_name = user.full_name or user.username
+                mgr_name = mgr.full_name or mgr.username
+                cycle_name = (db.session.get(ReviewCycle, sel_cycle_id).name if sel_cycle_id else 'Current')
+                subj = "[PMS] Self Review submitted: " + emp_name
+                body = """Hi {mgr_name},
+
+{emp_name} has submitted a self review for cycle {cycle_name}.
+Please log in to review: http://127.0.0.1:5000/review/manager
+
+Regards,
+PMS""".format(mgr_name=mgr_name, emp_name=emp_name, cycle_name=cycle_name)
+                send_email(mgr.email, subj, body)
+
+            flash('Self review saved and manager notified', 'success')
+        return redirect(url_for('self_review', cycle_id=sel_cycle_id))
+
+    self_map = latest_self_details(user.id)
+    rows = []
+    for c in competencies:
+        expected, weight = exp_map.get(c.id, (0,1))
+        self_level = self_map.get(c.id, {}).get('level', 0)
+        self_comment = self_map.get(c.id, {}).get('comment', None)
+        gap = max(expected - self_level, 0)
+        weighted_gap = gap * (weight or 1)
+        courses = recommend_courses(c.id, expected)
+        rows.append({
+            'competency': c, 'expected': expected, 'self_level': self_level,
+            'gap': gap, 'weighted_gap': weighted_gap,
+            'courses': courses[:3], 'self_comment': self_comment
+        })
+    return render_template('self_review.html', competencies=competencies, rows=rows, cycles=cycles, sel_cycle_id=sel_cycle_id)
+
+
+@app.route('/review/manager', methods=['GET','POST'])
+@login_required
+def manager_review():
+    if not getattr(current_user, 'is_manager', False):
+        return redirect(url_for('index'))
+
+    team = User.query.filter_by(manager_id=current_user.id).all()
+    team_ids = {u.id for u in team}
+    sel_user = None
+
+    cycles = ReviewCycle.query.order_by(ReviewCycle.start_date.desc().nullslast()).all()
+    sel_cycle_id = request.values.get('cycle_id', type=int) or (current_cycle().id if current_cycle() else None)
+
+    if request.method == 'POST':
+        user_id = int(request.form['user_id'])
+        if user_id not in team_ids:
+            flash('You can only review your direct reports.', 'danger')
+            return redirect(url_for('manager_review'))
+
+        sel_user = db.session.get(User, user_id)
+        exp_map = current_expectations_for(sel_user)
+        competencies = CompetencySkill.query.filter(CompetencySkill.id.in_(exp_map.keys())).all()
+
+        saved_any = False
+        for c in competencies:
+            val = request.form.get(f'comp_{c.id}')
+            cmt = request.form.get(f'cmt_{c.id}', '').strip()
+            if val is None:
+                continue
+            db.session.add(ManagerEvaluation(
+                user_id=sel_user.id, manager_id=current_user.id, competency_id=c.id,
+                level=int(val), cycle_id=sel_cycle_id, comment=(cmt or None)
+            ))
+            saved_any = True
+
+        if saved_any:
+            db.session.commit()
+            log_audit('UPSERT','ManagerEvaluation', None, after={'user_id':sel_user.id,'cycle_id':sel_cycle_id})
+
+        # Notify employee
+            if getattr(sel_user, 'email', None):
+                mgr_name = current_user.full_name or current_user.username
+                emp_name = sel_user.full_name or sel_user.username
+                cycle_name = (db.session.get(ReviewCycle, sel_cycle_id).name if sel_cycle_id else 'Current')
+                subj = "[PMS] Your Manager Review is updated: " + emp_name
+                body = """Hi {emp_name},
+
+Your manager ({mgr_name}) has submitted/updated your manager review for cycle {cycle_name}.
+Please log in to view details.
+
+Regards,
+PMS""".format(emp_name=emp_name, mgr_name=mgr_name, cycle_name=cycle_name)
+                send_email(sel_user.email, subj, body)
+
+            flash('Manager review saved and employee notified', 'success')
+        return redirect(url_for('manager_review', user_id=user_id, cycle_id=sel_cycle_id))
+
+    user_id = request.args.get('user_id', type=int)
+    if user_id:
+        if user_id not in team_ids:
+            flash('You can only view your direct reports.', 'danger')
+            return redirect(url_for('manager_review'))
+        sel_user = db.session.get(User, user_id)
+
+    rows = []
+    if sel_user:
+        exp_map = current_expectations_for(sel_user)
+        competencies = CompetencySkill.query.filter(CompetencySkill.id.in_(exp_map.keys())).all()
+        self_map = latest_self_details(sel_user.id)
+        man_lvls = {k:v[0] for k,v in latest_manager_levels(sel_user.id).items()}
+
+        for c in competencies:
+            expected, weight = exp_map.get(c.id, (0,1))
+            actual = man_lvls.get(c.id, self_map.get(c.id, {}).get('level', 0))
+            gap = max(expected - (actual or 0), 0)
+            weighted_gap = gap * (weight or 1)
+            courses = recommend_courses(c.id, expected)
+            rows.append({
+                'competency': c, 'expected': expected,
+                'self_level': self_map.get(c.id, {}).get('level'),
+                'self_comment': self_map.get(c.id, {}).get('comment'),
+                'manager_level': man_lvls.get(c.id, 0),
+                'gap': gap, 'weighted_gap': weighted_gap,
+                'courses': courses[:3]
+            })
+
+    return render_template('manager_review.html', team=team, sel_user=sel_user, rows=rows, cycles=cycles, sel_cycle_id=sel_cycle_id)
+
+
+@app.route('/trends')
+@login_required
+def trends():
+    if not current_user.is_manager:
+        return redirect(url_for('index'))
+    team = User.query.filter_by(manager_id=current_user.id).all()
+    sel_user = None
+    user_id = request.args.get('user_id', type=int)
+    if user_id:
+        if user_id not in {u.id for u in team}:
+            flash('You can only view your direct reports.', 'danger')
+            return redirect(url_for('trends'))
+        sel_user = db.session.get(User, user_id)
+    charts = []
+    if sel_user:
+        cycles = ReviewCycle.query.order_by(ReviewCycle.start_date).all()
+        exp_map = current_expectations_for(sel_user)
+        comp_ids = list(exp_map.keys())
+        comps = CompetencySkill.query.filter(CompetencySkill.id.in_(comp_ids)).all()
+        for c in comps:
+            mgr_points = []
+            self_points = []
+            labels = []
+            for cyc in cycles:
+                labels.append(cyc.name)
+                m = ManagerEvaluation.query.filter_by(user_id=sel_user.id, competency_id=c.id, cycle_id=cyc.id).order_by(ManagerEvaluation.created_at.desc()).first()
+                s = SelfEvaluation.query.filter_by(user_id=sel_user.id, competency_id=c.id, cycle_id=cyc.id).order_by(SelfEvaluation.created_at.desc()).first()
+                mgr_points.append(m.level if m else None)
+                self_points.append(s.level if s else None)
+            charts.append({'id': f'chart_{c.id}', 'title': f'{c.name}', 'labels': labels, 'datasets': [ {'label':'Manager', 'data': mgr_points, 'borderColor':'#3b82f6'}, {'label':'Self', 'data': self_points, 'borderColor':'#f59e0b'} ]})
+    return render_template('trends.html', team=team, sel_user=sel_user, charts=charts)
+
+# Calibration (ADMIN)
+@app.route('/admin/calibration', methods=['GET','POST'])
+@login_required
+@require_roles('ADMIN')
+def calibration():
+    cycles = ReviewCycle.query.order_by(ReviewCycle.start_date.desc().nullslast()).all()
+    groups = Group.query.all()
+    grades = Grade.query.all()
+    sel_cycle = None
+    if request.method == 'POST':
+        cycle_id = int(request.form['cycle_id'])
+        users = User.query.all()
+        for u in users:
+            exp = current_expectations_for(u)
+            for comp_id in exp.keys():
+                val = request.form.get(f'cal_{u.id}_{comp_id}')
+                note = request.form.get(f'note_{u.id}_{comp_id}')
+                if val is None: continue
+                rec = ManagerCalibration.query.filter_by(user_id=u.id, competency_id=comp_id, cycle_id=cycle_id).first()
+                if rec:
+                    before = rec.__dict__.copy()
+                    rec.calibrated_level = int(val)
+                    rec.note = note
+                    db.session.commit()
+                    log_audit('UPSERT','ManagerCalibration', rec.id, before=before, after=rec.__dict__)
+                else:
+                    rec = ManagerCalibration(user_id=u.id, competency_id=comp_id, cycle_id=cycle_id, calibrated_level=int(val), note=note)
+                    db.session.add(rec)
+                    db.session.commit()
+                    log_audit('UPSERT','ManagerCalibration', rec.id, after=rec.__dict__)
+        flash('Calibration saved', 'success')
+        return redirect(url_for('calibration', cycle_id=cycle_id))
+
+    cycle_id = request.args.get('cycle_id', type=int)
+    if cycle_id:
+        sel_cycle = db.session.get(ReviewCycle, cycle_id)
+
+    rows = []
+    if sel_cycle:
+        users = User.query.all()
+        for u in users:
+            exp = current_expectations_for(u)
+            comps = CompetencySkill.query.filter(CompetencySkill.id.in_(list(exp.keys()))).all()
+            for c in comps:
+                m = ManagerEvaluation.query.filter_by(user_id=u.id, competency_id=c.id, cycle_id=sel_cycle.id).order_by(ManagerEvaluation.created_at.desc()).first()
+                cal = ManagerCalibration.query.filter_by(user_id=u.id, competency_id=c.id, cycle_id=sel_cycle.id).first()
+                rows.append({'user': u, 'competency': c, 'manager_level': (m.level if m else None), 'calibrated_level': (cal.calibrated_level if cal else None), 'note': (cal.note if cal else '')})
+
+    return render_template('calibration.html', cycles=cycles, sel_cycle=sel_cycle, rows=rows)
+
+# Notifications trigger (ADMIN)
+@app.route('/admin/notify')
+@login_required
+@require_roles('ADMIN')
+def notify():
+    cyc = current_cycle()
+    notified = 0
+    users = User.query.all()
+    for u in users:
+        exp = current_expectations_for(u)
+        if not exp: continue
+        has_self = SelfEvaluation.query.filter_by(user_id=u.id, cycle_id=(cyc.id if cyc else None)).first()
+        if not has_self and u.email:
+            ok = send_email(u.email, 'Self Review Reminder', f'Please complete your self review for cycle {cyc.name if cyc else "Current"}.')
+            if ok: notified += 1
+    send_teams_card('Review Reminders Sent', f'{notified} self-review reminders sent.')
+    flash(f'Sent {notified} reminders', 'success')
+    return redirect(url_for('team_members'))
+
+@app.route('/admin/courses', methods=['GET','POST'])
+@login_required
+@require_roles('ADMIN')
+def courses():
+    competencies = CompetencySkill.query.all()
+    edit_id = request.args.get('edit_id', type=int)
+    item = db.session.get(Course, edit_id) if edit_id else None
+
+    if request.method == 'POST':
+        title = request.form['title']
+        competency_id = request.form.get('competency_id', type=int)
+        min_level = int(request.form.get('min_level', 0))
+        external_id = request.form.get('external_id')
+        url = request.form.get('url')
+
+        if item is None:
+            item = Course(
+                title=title, competency_id=competency_id, min_level=min_level,
+                external_id=external_id, url=url
+            )
+            db.session.add(item)
+        else:
+            item.title = title
+            item.competency_id = competency_id
+            item.min_level = min_level
+            item.external_id = external_id
+            item.url = url
+        db.session.commit()
+        flash('Saved course', 'success')
+        return redirect(url_for('courses'))
+
+    rows = Course.query.order_by(Course.id).all()
+    return render_template('courses.html', rows=rows, item=item, competencies=competencies)
+
+@app.route('/admin/courses/delete/<int:id>')
+@login_required
+@require_roles('ADMIN')
+def courses_delete(id):
+    c = Course.query.get(id)
+    if not c:
+        flash('Course not found', 'danger')
+        return redirect(url_for('courses'))
+    db.session.delete(c)
+    db.session.commit()
+    flash('Deleted course', 'success')
+    return redirect(url_for('courses'))
+
+# Flask 3 safe init
+
+def init_db():
+    db.create_all()
+    seed_once()
+
+with app.app_context():
+    init_db()
+
+if __name__ == '__main__':
+    with app.app_context():
+        init_db()
+    app.run(debug=True)

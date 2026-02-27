@@ -1,0 +1,32 @@
+{% extends 'base.html' %}
+{% block content %}
+<h3 class="mb-3">Courses (Training Recommender)</h3>
+<div class="row">
+  <div class="col-md-5">
+    <div class="card p-3 mb-3">
+      <h5>{{ 'Edit' if item else 'Add New' }}</h5>
+      <form method="post">
+        <div class="mb-2"><label class="form-label">Title</label><input name="title" class="form-control" value="{{ item.title if item }}" required></div>
+        <div class="mb-2"><label class="form-label">Competency</label>
+          <select name="competency_id" class="form-select">{% for c in competencies %}<option value="{{ c.id }}" {% if item and item.competency_id==c.id %}selected{% endif %}>{{ c.name }}</option>{% endfor %}</select></div>
+        <div class="mb-2"><label class="form-label">Min Level (L0–L4)</label>
+          <select name="min_level" class="form-select">{% for i in range(5) %}<option value="{{ i }}" {% if item and item.min_level==i %}selected{% endif %}>L{{ i }}</option>{% endfor %}</select></div>
+        <div class="mb-2"><label class="form-label">LMS Course ID</label><input name="external_id" class="form-control" value="{{ item.external_id if item }}"></div>
+        <div class="mb-2"><label class="form-label">Direct URL</label><input name="url" class="form-control" value="{{ item.url if item }}"></div>
+        <button class="btn btn-primary">{{ 'Update' if item else 'Create' }}</button>
+        {% if item %} <a class="btn btn-secondary" href="{{ url_for('courses') }}">Cancel</a> {% endif %}
+      </form>
+    </div>
+  </div>
+  <div class="col-md-7">
+    <div class="card p-3"><h5>All Courses</h5>
+      <table class="table table-striped"><thead><tr><th>ID</th><th>Title</th><th>Competency</th><th>Min</th><th>Link</th><th></th></tr></thead><tbody>
+        {% for c in rows %}
+        <tr><td>{{ c.id }}</td><td>{{ c.title }}</td><td>{{ c.competency.name if c.competency else '-' }}</td><td>L{{ c.min_level }}</td><td>{% if c.url %}<a class="btn btn-sm btn-secondary" href="{{ c.url }}" target="_blank">Open</a>{% endif %}</td>
+        <td><a class="btn btn-sm btn-primary" href="{{ url_for('courses', edit_id=c.id) }}">Edit</a> <a class="btn btn-sm btn-danger" href="{{ url_for('courses_delete', id=c.id) }}" onclick="return confirm('Delete?')">Delete</a></td></tr>
+        {% endfor %}
+      </tbody></table>
+    </div>
+  </div>
+</div>
+{% endblock %}

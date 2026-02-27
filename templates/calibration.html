@@ -1,0 +1,23 @@
+{% extends 'base.html' %}
+{% block content %}
+<h3 class="mb-3">Calibration</h3>
+<form method="get" class="row g-2 mb-3">
+  <div class="col-md-3"><label class="form-label">Review Cycle</label><select name="cycle_id" class="form-select">{% for c in cycles %}<option value="{{ c.id }}" {% if sel_cycle and sel_cycle.id==c.id %}selected{% endif %}>{{ c.name }}</option>{% endfor %}</select></div>
+  <div class="col-md-2 align-self-end"><button class="btn btn-secondary w-100">Load</button></div>
+</form>
+{% if sel_cycle %}
+<form method="post">
+  <input type="hidden" name="cycle_id" value="{{ sel_cycle.id }}">
+  <div class="card p-3">
+    <table class="table table-striped"><thead><tr><th>Employee</th><th>Competency</th><th>Mgr Level</th><th>Calibrated</th><th>Note</th></tr></thead><tbody>
+      {% for row in rows %}
+      <tr><td>{{ row.user.full_name or row.user.username }}</td><td>{{ row.competency.name }}</td><td>L{{ row.manager_level if row.manager_level is not none else '-' }}</td>
+      <td><select class="form-select" name="cal_{{ row.user.id }}_{{ row.competency.id }}">{% for i in range(5) %}<option value="{{ i }}" {% if row.calibrated_level == i %}selected{% endif %}>L{{ i }}</option>{% endfor %}</select></td>
+      <td><input class="form-control" name="note_{{ row.user.id }}_{{ row.competency.id }}" value="{{ row.note or '' }}"></td></tr>
+      {% endfor %}
+    </tbody></table>
+    <button class="btn btn-primary">Save Calibration</button>
+  </div>
+</form>
+{% endif %}
+{% endblock %}

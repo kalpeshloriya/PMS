@@ -1,0 +1,41 @@
+{% extends 'base.html' %}
+{% block content %}
+<h3 class="mb-3">Self Competency Review</h3>
+<form method="get" class="row g-2 mb-3">
+  {% if cycles %}
+  <div class="col-md-3"><label class="form-label">Cycle</label><select name="cycle_id" class="form-select">{% for c in cycles %}<option value="{{ c.id }}" {% if sel_cycle_id==c.id %}selected{% endif %}>{{ c.name }}</option>{% endfor %}</select></div>
+  <div class="col-md-2 align-self-end"><button class="btn btn-secondary w-100">Load</button></div>
+  {% endif %}
+</form>
+{% if competencies|length == 0 %}
+<div class="alert alert-info">No competencies mapped for your Group/Grade yet.</div>
+{% else %}
+<form method="post">
+  <input type="hidden" name="cycle_id" value="{{ sel_cycle_id }}">
+  <div class="card p-3">
+    <table class="table table-striped">
+      <thead>
+        <tr>
+          <th>Competency</th><th>Expected</th><th>Your Self Level</th><th>Gap</th><th>Weighted</th><th>Training</th><th>Comments</th><th>Courses</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in rows %}
+        <tr>
+          <td>{{ row.competency.name }}</td>
+          <td>L{{ row.expected }}</td>
+          <td><select class="form-select" name="comp_{{ row.competency.id }}">{% for i in range(5) %}<option value="{{ i }}" {% if row.self_level == i %}selected{% endif %}>L{{ i }}</option>{% endfor %}</select></td>
+          <td>{{ row.gap }}</td>
+          <td>{{ row.weighted_gap }}</td>
+          <td>{% if row.gap > 0 %}<span class="badge badge-gap">Training Required</span>{% else %}<span class="badge badge-ok">OK</span>{% endif %}</td>
+          <td><textarea class="form-control" name="cmt_{{ row.competency.id }}" rows="2" placeholder="Add any context or examples...">{{ row.self_comment or '' }}</textarea></td>
+          <td>{% for crs in row.courses %}<a class="btn btn-sm btn-secondary mb-1" target="_blank" href="{{ crs.link }}">{{ crs.title }}</a>{% endfor %}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    <button class="btn btn-primary">Save Self Review</button>
+  </div>
+</form>
+{% endif %}
+{% endblock %}

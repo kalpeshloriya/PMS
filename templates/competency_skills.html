@@ -1,0 +1,21 @@
+{% extends 'base.html' %}
+{% block content %}
+<h3 class="mb-3">Competency Skills</h3>
+<div class="row">
+  <div class="col-md-5">
+    <div class="card p-3 mb-3">
+      <h5>{{ 'Edit' if item else 'Add New' }}</h5>
+      <form method="post"><div class="mb-2"><label class="form-label">Name</label><input name="name" class="form-control" value="{{ item.name if item }}"></div>
+<div class="mb-2"><label class="form-label">Description</label><input name="description" class="form-control" value="{{ item.description if item }}"></div><button class="btn btn-primary">{{ 'Update' if item else 'Create' }}</button>{% if item %} <a class="btn btn-secondary" href="{{ url_for('competency_skills') }}">Cancel</a>{% endif %}</form>
+    </div>
+  </div>
+  <div class="col-md-7">
+    <div class="card p-3">
+      <h5>All</h5>
+      <table class="table table-striped"><thead><tr><th>ID</th><th>Name</th><th>Description</th><th>Actions</th></tr></thead><tbody>
+      {% for row in rows %}<tr><td>{{ row.id }}</td><td>{{ row.name }}</td><td>{{ row.description }}</td><td><a class="btn btn-sm btn-primary" href="{{ url_for('competency_skills', edit_id=row.id) }}">Edit</a> <a class="btn btn-sm btn-danger" href="{{ url_for('competency_skills_delete', id=row.id) }}" onclick="return confirm('Delete?');">Delete</a></td></tr>{% endfor %}
+      </tbody></table>
+    </div>
+  </div>
+</div>
+{% endblock %}
