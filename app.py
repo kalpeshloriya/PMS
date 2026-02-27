@@ -32,7 +32,7 @@ def utility_processor():
     return dict(safe_url_for=safe_url_for)
 
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY','change-me-in-production')
-app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///pms.db'
+
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
 AZURE_CLIENT_ID = os.environ.get('AZURE_CLIENT_ID')
@@ -46,9 +46,26 @@ SMTP_PASS = os.environ.get('SMTP_PASS')
 SMTP_FROM = os.environ.get('SMTP_FROM', 'no-reply@localhost')
 TEAMS_WEBHOOK_URL = os.environ.get('TEAMS_WEBHOOK_URL')
 
+import os
 
+# --- Database configuration (env-first: Postgres on Render, SQLite locally) ---
+db_url = os.getenv('DATABASE_URL')
+if db_url:
+    # Render sometimes provides postgres://; SQLAlchemy prefers postgresql://
+    db_url = db_url.replace('postgres://', 'postgresql://', 1)
+
+app.config['SQLALCHEMY_DATABASE_URI'] = db_url or 'sqlite:///pms.db'
+app.config.setdefault('SQLALCHEMY_TRACK_MODIFICATIONS', False)
 db = SQLAlchemy(app)
 login_manager = LoginManager(app)
+# --- Database configuration (env-first: Postgres on Render, SQLite locally) ---
+import os
+db_url = os.getenv('DATABASE_URL')
+if db_url:
+    db_url = db_url.replace('postgres://', 'postgresql://', 1)
+app.config['SQLALCHEMY_DATABASE_URI'] = db_url or 'sqlite:///pms.db'
+app.config.setdefault('SQLALCHEMY_TRACK_MODIFICATIONS', False)
+
 login_manager.login_view = 'login'
 
 # ---- Models ----
@@ -1232,6 +1249,49 @@ def signup():
 
 # --- Team Members (password aware, last-admin guarded) ---
 
+def signup():
+    if current_user.is_authenticated:
+        return redirect(url_for('index'))
+
+    error = None
+    if request.method == 'POST':
+        username = (request.form.get('username') or '').strip()
+        email    = (request.form.get('email') or '').strip()
+        pwd      = request.form.get('password') or ''
+        cpw      = request.form.get('confirm_password') or ''
+
+        if not username:
+            error = 'Username is required.'
+        elif User.query.filter_by(username=username).first():
+            error = 'Username already exists.'
+        elif not email:
+            error = 'Email is required.'
+        elif len(pwd) < 8:
+            error = 'Password must be at least 8 characters.'
+        elif pwd != cpw:
+            error = 'Passwords do not match.'
+
+        if not error:
+            u = User(username=username, email=email, full_name=None,
+                     is_manager=False, app_role='EMPLOYEE')
+            if hasattr(u,'set_password'):
+                u.set_password(pwd)
+            else:
+                from werkzeug.security import generate_password_hash
+                u.password_hash = generate_password_hash(pwd)
+            db.session.add(u)
+            db.session.commit()
+            log_audit('CREATE','User', u.id, after=u.__dict__)
+            flash('Signup successful. Please log in.', 'success')
+            return redirect(url_for('login'))
+        flash(error, 'danger')
+
+    return render_template('signup.html')
+
+
+
+# --- Team Members (password aware, last-admin guarded) ---
+
 @app.route('/admin/team', methods=['GET','POST'])
 @login_required
 @require_roles('ADMIN')
@@ -1372,4 +1432,10 @@ def signup():
         flash(error, 'danger')
 
     return render_template('signup.html')
+
+
+# --- Health check endpoint ---
+@app.get('/healthz')
+def healthz():
+    return 'ok', 200
 
