@@ -97,7 +97,7 @@ html, body { background-color: var(--blue-dark) !important; color: #fff !importa
 .card .form-control, .card .form-select,
 .table .form-control, .table .form-select {
   background-color: #0f172a !important;
-  color: #ffffff !important;
+  color : #ffffff !important;
   border-color: var(--blue-border) !important;
 }
 .card .form-control::placeholder,
