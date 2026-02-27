@@ -46,25 +46,23 @@ SMTP_PASS = os.environ.get('SMTP_PASS')
 SMTP_FROM = os.environ.get('SMTP_FROM', 'no-reply@localhost')
 TEAMS_WEBHOOK_URL = os.environ.get('TEAMS_WEBHOOK_URL')
 
+
 import os
 
+# --- Database configuration (psycopg3 driver in prod, SQLite locally) ---
 db_url = os.getenv('DATABASE_URL')
 if db_url:
-    # Use psycopg3 driver explicitly
+    # Force psycopg3 driver
     db_url = db_url.replace("postgres://", "postgresql+psycopg://", 1)
 
 app.config['SQLALCHEMY_DATABASE_URI'] = db_url or "sqlite:///pms.db"
 app.config.setdefault('SQLALCHEMY_TRACK_MODIFICATIONS', False)
 
+print("DB in use:", app.config.get('SQLALCHEMY_DATABASE_URI'))  # keep for Render logs
 db = SQLAlchemy(app)
+
 login_manager = LoginManager(app)
 # --- Database configuration (env-first: Postgres on Render, SQLite locally) ---
-import os
-db_url = os.getenv('DATABASE_URL')
-if db_url:
-    db_url = db_url.replace('postgres://', 'postgresql://', 1)
-app.config['SQLALCHEMY_DATABASE_URI'] = db_url or 'sqlite:///pms.db'
-app.config.setdefault('SQLALCHEMY_TRACK_MODIFICATIONS', False)
 
 login_manager.login_view = 'login'
 
