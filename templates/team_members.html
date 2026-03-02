@@ -22,15 +22,17 @@
 
   /* Keep Edit/Delete on one row */
   .team-actions { display: inline-flex; gap: .5rem; white-space: nowrap; justify-content: flex-end; align-items: center; }
-  .col-actions  { width: 220px; } /* adjust if you change button sizes */
+  .col-actions  { width: 220px; } /* keep actions wide enough for both buttons */
 
-  /* Columns filter dropdown: ensure labels are readable and spaced */
+  /* Columns filter dropdown: match Admin (primary button + dark menu) */
+  .card-toolbar .btn-columns { /* helper class for clarity */
+    /* nothing extra; we'll use Bootstrap's btn-primary */
+  }
   .card-toolbar .dropdown-menu { min-width: 260px; }
-  /* Force explicit black text inside the dropdown */
-  .card-toolbar .dropdown-menu,
-  .card-toolbar .dropdown-menu * { color: #000 !important; }
-  .card-toolbar .form-check { margin-bottom: .35rem; }
-  .card-toolbar .form-check-label { font-weight: 500; }
+  /* Improve readability inside dark menu */
+  .dropdown-menu-dark .form-check-label { color: #fff; font-weight: 500; }
+  .dropdown-menu-dark .form-check-input { border-color: rgba(255,255,255,.35); }
+  .dropdown-menu-dark .form-text { color: rgba(255,255,255,.7); }
 </style>
 
 <h3 class="mb-3">Team Members</h3>
@@ -156,12 +158,12 @@
       <div class="d-flex align-items-center justify-content-between mb-2">
         <h5 class="mb-0">Member List</h5>
 
-        <!-- Columns filter (with visible labels in black) -->
+        <!-- Columns filter styled like Admin dropdown -->
         <div class="card-toolbar">
           <div class="btn-group">
-            <button class="btn btn-sm btn-outline-secondary dropdown-toggle" type="button"
+            <button class="btn btn-primary btn-columns dropdown-toggle" type="button"
                     data-bs-toggle="dropdown" aria-expanded="false">Columns</button>
-            <div class="dropdown-menu dropdown-menu-end p-3">
+            <div class="dropdown-menu dropdown-menu-dark dropdown-menu-end p-3">
               <!-- Column visibility checkboxes (indices must match the thead order) -->
               <div class="form-check">
                 <input class="form-check-input col-toggle" type="checkbox" data-col="0" id="col_id">
@@ -180,7 +182,6 @@
                 <label class="form-check-label" for="col_email">Email</label>
               </div>
 
-              <!-- Hidden by default on first load; persisted via localStorage thereafter -->
               <hr class="my-2">
               <div class="form-check">
                 <input class="form-check-input col-toggle" type="checkbox" data-col="4" id="col_roleapp">
@@ -213,7 +214,7 @@
                 <label class="form-check-label" for="col_actions">Actions (always on)</label>
               </div>
 
-              <div class="text-muted small mt-2" style="color:#000 !important;">Your column choices are saved in this browser.</div>
+              <div class="form-text mt-2">Your column choices are saved in this browser.</div>
             </div>
           </div>
         </div>
@@ -255,7 +256,7 @@
             </td>
             <td class="team-actions">
               <a class="btn btn-sm btn-primary" href="{{ url_for('team_members', edit_id=row.id) }}">Edit</a>
-              <a class="btn btn-sm btn-danger" href="{{ url_for('team_members_delete', id=row.id) }}" onclick="return confirm('Delete?');">Delete</a>
+              <a class="btn btn-sm btn-danger"  href="{{ url_for('team_members_delete', id=row.id) }}" onclick="return confirm('Delete?');">Delete</a>
             </td>
           </tr>
           {% endfor %}
@@ -266,7 +267,7 @@
         (function () {
           /* Per‑user storage key via safe serialization — avoids Jinja escaping issues */
           const userKey = {{ (current_user.username if current_user.is_authenticated else 'guest')|tojson }};
-          const STORAGE_KEY = 'tm_columns_v4_' + userKey;  // bumped for your new defaults
+          const STORAGE_KEY = 'tm_columns_v5_' + userKey;  // bump version to ensure clean state
 
           function tryParse(json, fallback) { try { return JSON.parse(json); } catch(e){ return fallback; } }
 
@@ -286,14 +287,14 @@
           /** Utility: element visibility */
           function isHidden(el) { return !!el && getComputedStyle(el).display === 'none'; }
 
-          /** Estimate text width in px using a quick ch metric — 10 chars probe */
+          /** Estimate text width in px using a quick ch metric — 10 chars probe (as requested) */
           let _pxPerCh = null;
           function pxPerCh() {
             if (_pxPerCh) return _pxPerCh;
             const probe = document.createElement('span');
             probe.style.visibility = 'hidden';
             probe.style.whiteSpace  = 'nowrap';
-            probe.textContent = '0'.repeat(10);   // your request: 10 instead of 20
+            probe.textContent = '0'.repeat(10);   // 10 instead of 20
             document.body.appendChild(probe);
             _pxPerCh = probe.getBoundingClientRect().width / 10;
             document.body.removeChild(probe);
@@ -337,8 +338,8 @@
             if (!theadRow || !tbody) return;
 
             const colCount = theadRow.cells.length;
-            const MIN_PX   = 100;      // <- your new minimum per visible column
-            const ACT_WPX  = 220;      // actions column fixed width (unchanged)
+            const MIN_PX   = 100;      // your new minimum per visible column
+            const ACT_WPX  = 220;      // actions column fixed width
             const totalPX  = Math.max(0, table.clientWidth || table.getBoundingClientRect().width);
 
             // Visible columns + natural widths
@@ -408,12 +409,12 @@
           // 1) Apply visibility to table
           visibility.forEach((show, i) => setColumnVisibility(table, i, show));
 
-          // 2) Sync checkboxes
+          // 2) Sync checkboxes (Actions always on)
           document.querySelectorAll('.col-toggle').forEach(cb => {
             const idx = parseInt(cb.getAttribute('data-col'), 10);
             if (!Number.isNaN(idx) && visibility[idx] !== undefined) {
               cb.checked = !!visibility[idx];
-              if (idx === colCount - 1) { cb.checked = true; cb.disabled = true; } // Actions forced visible
+              if (idx === colCount - 1) { cb.checked = true; cb.disabled = true; }
             }
           });
 
