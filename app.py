@@ -504,6 +504,33 @@ def team_members_delete(id):
 
     flash('Deleted', 'success')
     return redirect(url_for('team_members'))
+# --- Groups (ADMIN only) ---
+from flask import abort  # ensure abort is imported at top if not already
+
+@app.route('/admin/groups', methods=['GET','POST'])
+@login_required
+@require_roles('ADMIN')
+def groups():
+    edit_id = request.args.get('edit_id', type=int)
+    item = Group.query.get(edit_id) if edit_id else None
+
+    if request.method == 'POST':
+        name = request.form['name']
+        desc = request.form.get('description')
+        if item is None:
+            item = Group(name=name, description=desc)
+            db.session.add(item)
+        else:
+            item.name = name
+            item.description = desc
+        db.session.commit()
+        log_audit('UPSERT','Group', item.id, after=item.__dict__)
+        flash('Saved group', 'success')
+        return redirect(url_for('groups'))
+
+    rows = Group.query.order_by(Group.id).all()
+    return render_template('groups.html', rows=rows, item=item)
+
 @app.route('/admin/groups/delete/<int:id>')
 @login_required
 @require_roles('ADMIN')
@@ -515,7 +542,6 @@ def groups_delete(id):
     log_audit('DELETE','Group', id, before=before)
     flash('Deleted', 'success')
     return redirect(url_for('groups'))
-
 @app.route('/admin/grades', methods=['GET','POST'])
 @login_required
 @require_roles('ADMIN')
