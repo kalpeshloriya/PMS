@@ -1,64 +1,239 @@
 {% extends 'base.html' %}
 {% block content %}
+<style>
+  /* ===== Page‑scoped styles (only this template) ===== */
+
+  /* Right card fills its column */
+  .member-list-card { width: 100%; max-width: 100%; }
+
+  /* Keep the table width constant and clamp columns */
+  .team-table {
+    table-layout: fixed;  /* constant total width; col widths come from <colgroup> */
+    width: 100%;          /* occupy full card width */
+    font-size: .92rem;
+  }
+  .team-table th, .team-table td {
+    padding: .45rem .55rem;
+    vertical-align: middle;
+    white-space: nowrap;      /* prevent multi-line blow-ups */
+    overflow: hidden;         /* trim excess text */
+    text-overflow: ellipsis;  /* show … when trimmed */
+  }
+
+  /* Keep Edit/Delete on one row */
+  .team-actions { display: inline-flex; gap: .5rem; white-space: nowrap; justify-content: flex-end; align-items: center; }
+  .col-actions  { width: 220px; } /* adjust if you change button sizes */
+
+  /* Columns filter dropdown: ensure labels are readable and spaced */
+  .card-toolbar .dropdown-menu { min-width: 260px; }
+  /* Force explicit black text inside the dropdown */
+  .card-toolbar .dropdown-menu,
+  .card-toolbar .dropdown-menu * { color: #000 !important; }
+  .card-toolbar .form-check { margin-bottom: .35rem; }
+  .card-toolbar .form-check-label { font-weight: 500; }
+</style>
+
 <h3 class="mb-3">Team Members</h3>
+
 <div class="row">
+  <!-- LEFT: Add/Edit form (left aligned; original fields preserved) -->
   <div class="col-md-5">
     <div class="card p-3 mb-3">
       <h5>{{ 'Edit' if item else 'Add New' }}</h5>
+
       <form method="post">
-        <div class="mb-2"><label class="form-label">Username</label>
-          <input name="username" class="form-control" value="{{ item.username if item }}" {% if item %}readonly{% endif %} required></div>
-        <div class="mb-2"><label class="form-label">Full Name</label>
-          <input name="full_name" class="form-control" value="{{ item.full_name if item }}"></div>
-        <div class="mb-2"><label class="form-label">Email</label>
-          <input name="email" class="form-control" value="{{ item.email if item }}"></div>
-        <div class="mb-2"><label class="form-label">Is Manager</label>
+        <div class="mb-2">
+          <label class="form-label">Username</label>
+          <input name="username" class="form-control"
+                 value="{{ item.username if item }}"
+                 {% if item %}readonly{% endif %}
+                 required>
+        </div>
+
+        <div class="mb-2">
+          <label class="form-label">Full Name</label>
+          <input name="full_name" class="form-control" value="{{ item.full_name if item }}">
+        </div>
+
+        <div class="mb-2">
+          <label class="form-label">Email</label>
+          <input name="email" class="form-control" value="{{ item.email if item }}">
+        </div>
+
+        <div class="mb-2">
+          <label class="form-label">Is Manager</label>
           <select name="is_manager" class="form-select">
             <option value="false" {% if item and not item.is_manager %}selected{% endif %}>No</option>
             <option value="true"  {% if item and item.is_manager %}selected{% endif %}>Yes</option>
-          </select></div>
-        <div class="mb-2"><label class="form-label">App Role</label>
+          </select>
+        </div>
+
+        <div class="mb-2">
+          <label class="form-label">App Role</label>
           {% set roles_list = ['EMPLOYEE','MANAGER','ADMIN','HRBP','TOWER_LEAD','PRACTICE_HEAD'] %}
           <select name="app_role" class="form-select">
-            {% for r in roles_list %}<option value="{{ r }}" {% if item and item.app_role==r %}selected{% endif %}>{{ r }}</option>{% endfor %}
-          </select></div>
-        <div class="mb-2"><label class="form-label">Password {% if item %}(leave blank to keep){% else %}(min 8 chars){% endif %}</label>
-          <input name="password" type="password" class="form-control" {% if not item %}required{% endif %} minlength="8"></div>
-        <div class="mb-3"><label class="form-label">Confirm Password</label>
-          <input name="confirm_password" type="password" class="form-control" {% if not item %}required{% endif %} minlength="8"></div>
-        <div class="mb-2"><label class="form-label">Group</label>
+            {% for r in roles_list %}
+              <option value="{{ r }}" {% if item and item.app_role==r %}selected{% endif %}>{{ r }}</option>
+            {% endfor %}
+          </select>
+        </div>
+
+        <div class="mb-2">
+          <label class="form-label">
+            Password
+            {% if item %}(leave blank to keep){% else %}(min 8 chars){% endif %}
+          </label>
+          <input name="password" type="password" class="form-control"
+                 {% if not item %}required{% endif %} minlength="8">
+        </div>
+
+        <div class="mb-3">
+          <label class="form-label">Confirm Password</label>
+          <input name="confirm_password" type="password" class="form-control"
+                 {% if not item %}required{% endif %} minlength="8">
+        </div>
+
+        <div class="mb-2">
+          <label class="form-label">Group</label>
           <select name="group_id" class="form-select">
             <option value="">- None -</option>
-            {% for g in groups %}<option value="{{ g.id }}" {% if item and item.group_id==g.id %}selected{% endif %}>{{ g.name }}</option>{% endfor %}
-          </select></div>
-        <div class="mb-2"><label class="form-label">Grade</label>
+            {% for g in groups %}
+              <option value="{{ g.id }}" {% if item and item.group_id==g.id %}selected{% endif %}>
+                {{ g.name }}
+              </option>
+            {% endfor %}
+          </select>
+        </div>
+
+        <div class="mb-2">
+          <label class="form-label">Grade</label>
           <select name="grade_id" class="form-select">
             <option value="">- None -</option>
-            {% for g in grades %}<option value="{{ g.id }}" {% if item and item.grade_id==g.id %}selected{% endif %}>{{ g.name }}</option>{% endfor %}
-          </select></div>
-        <div class="mb-2"><label class="form-label">Role</label>
+            {% for g in grades %}
+              <option value="{{ g.id }}" {% if item and item.grade_id==g.id %}selected{% endif %}>
+                {{ g.name }}
+              </option>
+            {% endfor %}
+          </select>
+        </div>
+
+        <div class="mb-2">
+          <label class="form-label">Role</label>
           <select name="role_id" class="form-select">
             <option value="">- None -</option>
-            {% for r in roles %}<option value="{{ r.id }}" {% if item and item.role_id==r.id %}selected{% endif %}>{{ r.name }}</option>{% endfor %}
-          </select></div>
-        <div class="mb-3"><label class="form-label">Manager</label>
+            {% for r in roles %}
+              <option value="{{ r.id }}" {% if item and item.role_id==r.id %}selected{% endif %}>
+                {{ r.name }}
+              </option>
+            {% endfor %}
+          </select>
+        </div>
+
+        <div class="mb-3">
+          <label class="form-label">Manager</label>
           <select name="manager_id" class="form-select">
             <option value="">- None -</option>
-            {% for m in managers %}<option value="{{ m.id }}" {% if item and item.manager_id==m.id %}selected{% endif %}>{{ m.full_name or m.username }}{% if m.app_role=='ADMIN' %} (ADMIN){% elif m.is_manager %} (Manager){% endif %}</option>{% endfor %}
-          </select></div>
+            {% for m in managers %}
+              <option value="{{ m.id }}" {% if item and item.manager_id==m.id %}selected{% endif %}>
+                {{ m.full_name or m.username }}
+                {% if m.app_role=='ADMIN' %}(ADMIN){% elif m.is_manager %}(Manager){% endif %}
+              </option>
+            {% endfor %}
+          </select>
+        </div>
+
         <button class="btn btn-primary">{{ 'Update' if item else 'Create' }}</button>
-        {% if item %}<a class="btn btn-secondary" href="{{ url_for('team_members') }}">Cancel</a>{% endif %}
+        {% if item %}
+          <a class="btn btn-secondary" href="{{ url_for('team_members') }}">Cancel</a>
+        {% endif %}
       </form>
     </div>
   </div>
+
+  <!-- RIGHT: Member List (right aligned, fills its column) -->
   <div class="col-md-7">
-    <div class="card p-3">
-      <h5>All</h5>
-      <table class="table table-striped table-hover">
+    <div class="card p-3 member-list-card">
+      <div class="d-flex align-items-center justify-content-between mb-2">
+        <h5 class="mb-0">Member List</h5>
+
+        <!-- Columns filter (with visible labels in black) -->
+        <div class="card-toolbar">
+          <div class="btn-group">
+            <button class="btn btn-sm btn-outline-secondary dropdown-toggle" type="button"
+                    data-bs-toggle="dropdown" aria-expanded="false">Columns</button>
+            <div class="dropdown-menu dropdown-menu-end p-3">
+              <!-- Column visibility checkboxes (indices must match the thead order) -->
+              <div class="form-check">
+                <input class="form-check-input col-toggle" type="checkbox" data-col="0" id="col_id">
+                <label class="form-check-label" for="col_id">ID</label>
+              </div>
+              <div class="form-check">
+                <input class="form-check-input col-toggle" type="checkbox" data-col="1" id="col_username">
+                <label class="form-check-label" for="col_username">Username</label>
+              </div>
+              <div class="form-check">
+                <input class="form-check-input col-toggle" type="checkbox" data-col="2" id="col_name">
+                <label class="form-check-label" for="col_name">Name</label>
+              </div>
+              <div class="form-check">
+                <input class="form-check-input col-toggle" type="checkbox" data-col="3" id="col_email">
+                <label class="form-check-label" for="col_email">Email</label>
+              </div>
+
+              <!-- Hidden by default on first load; persisted via localStorage thereafter -->
+              <hr class="my-2">
+              <div class="form-check">
+                <input class="form-check-input col-toggle" type="checkbox" data-col="4" id="col_roleapp">
+                <label class="form-check-label" for="col_roleapp">App Role</label>
+              </div>
+              <div class="form-check">
+                <input class="form-check-input col-toggle" type="checkbox" data-col="5" id="col_ismgr">
+                <label class="form-check-label" for="col_ismgr">IsMgr</label>
+              </div>
+              <div class="form-check">
+                <input class="form-check-input col-toggle" type="checkbox" data-col="6" id="col_group">
+                <label class="form-check-label" for="col_group">Group</label>
+              </div>
+              <div class="form-check">
+                <input class="form-check-input col-toggle" type="checkbox" data-col="7" id="col_grade">
+                <label class="form-check-label" for="col_grade">Grade</label>
+              </div>
+              <div class="form-check">
+                <input class="form-check-input col-toggle" type="checkbox" data-col="8" id="col_role">
+                <label class="form-check-label" for="col_role">Role</label>
+              </div>
+
+              <hr class="my-2">
+              <div class="form-check">
+                <input class="form-check-input col-toggle" type="checkbox" data-col="9" id="col_manager">
+                <label class="form-check-label" for="col_manager">Manager</label>
+              </div>
+              <div class="form-check">
+                <input class="form-check-input" type="checkbox" data-col="10" id="col_actions" checked disabled>
+                <label class="form-check-label" for="col_actions">Actions (always on)</label>
+              </div>
+
+              <div class="text-muted small mt-2" style="color:#000 !important;">Your column choices are saved in this browser.</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <table class="table table-striped table-hover team-table" id="member-table">
+        <!-- Col widths are rebuilt by JS based on visible data -->
         <thead>
           <tr>
-            <th>ID</th><th>Username</th><th>Name</th><th>Email</th>
-            <th>App Role</th><th>IsMgr</th><th>Group</th><th>Grade</th><th>Role</th><th>Manager</th><th></th>
+            <th>ID</th>
+            <th>Username</th>
+            <th>Name</th>
+            <th>Email</th>
+            <th>App Role</th>
+            <th>IsMgr</th>
+            <th>Group</th>
+            <th>Grade</th>
+            <th>Role</th>
+            <th>Manager</th>
+            <th class="col-actions"></th>
           </tr>
         </thead>
         <tbody>
@@ -73,8 +248,12 @@
             <td>{{ row.group.name if row.group else '-' }}</td>
             <td>{{ row.grade.name if row.grade else '-' }}</td>
             <td>{{ row.role.name if row.role else '-' }}</td>
-            <td>{% if row.manager %}{{ row.manager.full_name or row.manager.username }}{% elif row.manager_id %}ID {{ row.manager_id }}{% else %}-{% endif %}</td>
             <td>
+              {% if row.manager %}{{ row.manager.full_name or row.manager.username }}
+              {% elif row.manager_id %}ID {{ row.manager_id }}
+              {% else %}-{% endif %}
+            </td>
+            <td class="team-actions">
               <a class="btn btn-sm btn-primary" href="{{ url_for('team_members', edit_id=row.id) }}">Edit</a>
               <a class="btn btn-sm btn-danger" href="{{ url_for('team_members_delete', id=row.id) }}" onclick="return confirm('Delete?');">Delete</a>
             </td>
@@ -82,6 +261,186 @@
           {% endfor %}
         </tbody>
       </table>
+
+      <script>
+        (function () {
+          /* Per‑user storage key via safe serialization — avoids Jinja escaping issues */
+          const userKey = {{ (current_user.username if current_user.is_authenticated else 'guest')|tojson }};
+          const STORAGE_KEY = 'tm_columns_v4_' + userKey;  // bumped for your new defaults
+
+          function tryParse(json, fallback) { try { return JSON.parse(json); } catch(e){ return fallback; } }
+
+          /** Build a visibility array from storage, or first‑load defaults. */
+          function loadVisibility(colCount) {
+            const saved = tryParse(localStorage.getItem(STORAGE_KEY), null);
+            if (saved && Array.isArray(saved) && saved.length === colCount) return saved;
+
+            // First load defaults: show ID/Username/Name/Email/Manager/Actions; hide 4..8
+            const vis = new Array(colCount).fill(true);
+            [4,5,6,7,8].forEach(i => vis[i] = false);   // App Role, IsMgr, Group, Grade, Role
+            vis[colCount - 1] = true;                   // Actions always visible
+            return vis;
+          }
+          function saveVisibility(vis) { localStorage.setItem(STORAGE_KEY, JSON.stringify(vis)); }
+
+          /** Utility: element visibility */
+          function isHidden(el) { return !!el && getComputedStyle(el).display === 'none'; }
+
+          /** Estimate text width in px using a quick ch metric — 10 chars probe */
+          let _pxPerCh = null;
+          function pxPerCh() {
+            if (_pxPerCh) return _pxPerCh;
+            const probe = document.createElement('span');
+            probe.style.visibility = 'hidden';
+            probe.style.whiteSpace  = 'nowrap';
+            probe.textContent = '0'.repeat(10);   // your request: 10 instead of 20
+            document.body.appendChild(probe);
+            _pxPerCh = probe.getBoundingClientRect().width / 10;
+            document.body.removeChild(probe);
+            return _pxPerCh;
+          }
+          function estimateCellPx(el) {
+            const txt = ((el && (el.innerText || el.textContent)) || '').trim();
+            const ch  = Math.max(2, txt.length);
+            return Math.round(ch * pxPerCh());
+          }
+
+          /** Show/Hide a column by index (affects th, td, and colgroup if present). */
+          function setColumnVisibility(table, colIndex, show) {
+            const theadRow = table.tHead && table.tHead.rows && table.tHead.rows[0];
+            const tbody    = table.tBodies && table.tBodies[0];
+            if (!theadRow || !tbody) return;
+
+            const th = theadRow.cells[colIndex];
+            if (th) th.style.display = show ? '' : 'none';
+
+            for (const tr of tbody.rows) {
+              const td = tr.cells[colIndex];
+              if (td) td.style.display = show ? '' : 'none';
+            }
+
+            const cg = table.querySelector('colgroup');
+            if (cg && cg.children[colIndex]) {
+              cg.children[colIndex].style.display = show ? '' : 'none';
+            }
+          }
+
+          /** CONSTANT‑WIDTH FITTER (min 100px per visible data column; Actions fixed) */
+          function fitTableColumns(table) {
+            if (!table) return;
+
+            const old = table.querySelector('colgroup');
+            if (old) old.remove();
+
+            const theadRow = table.tHead && table.tHead.rows && table.tHead.rows[0];
+            const tbody    = table.tBodies && table.tBodies[0];
+            if (!theadRow || !tbody) return;
+
+            const colCount = theadRow.cells.length;
+            const MIN_PX   = 100;      // <- your new minimum per visible column
+            const ACT_WPX  = 220;      // actions column fixed width (unchanged)
+            const totalPX  = Math.max(0, table.clientWidth || table.getBoundingClientRect().width);
+
+            // Visible columns + natural widths
+            const natural = new Array(colCount).fill(0);
+            const visible = new Array(colCount).fill(false);
+
+            for (let i = 0; i < colCount; i++) {
+              const th = theadRow.cells[i];
+              if (isHidden(th)) continue;
+              visible[i] = true;
+
+              let maxPx = estimateCellPx(th);
+              for (const tr of tbody.rows) {
+                const td = tr.cells[i];
+                if (td && !isHidden(td)) maxPx = Math.max(maxPx, estimateCellPx(td));
+              }
+              natural[i] = maxPx;
+            }
+
+            // Reserve fixed width for Actions if visible
+            const last = colCount - 1;
+            let reservedPX = 0;
+            if (visible[last]) {
+              natural[last] = ACT_WPX;
+              reservedPX += ACT_WPX;
+            }
+
+            // Enforce min early and compute sum of naturals (non-actions)
+            let sumNatural = 0;
+            for (let i = 0; i < colCount; i++) {
+              if (i === last) continue;
+              if (visible[i]) {
+                natural[i] = Math.max(MIN_PX, natural[i]);
+                sumNatural += natural[i];
+              }
+            }
+
+            const remainingPX = Math.max(0, totalPX - reservedPX);
+            const scale = sumNatural > 0 ? remainingPX / sumNatural : 1;
+
+            const cg = document.createElement('colgroup');
+            for (let i = 0; i < colCount; i++) {
+              const col = document.createElement('col');
+
+              if (!visible[i]) {
+                // hidden via setColumnVisibility
+              } else if (i === last) {
+                col.style.width = ACT_WPX + 'px';
+                col.className = 'col-actions';
+              } else {
+                const w = Math.max(MIN_PX, Math.floor(natural[i] * scale));
+                col.style.width = w + 'px';
+              }
+              cg.appendChild(col);
+            }
+            table.insertBefore(cg, table.firstChild);
+          }
+
+          /* --------- Wire up page --------- */
+
+          const table = document.getElementById('member-table');
+          if (!table) return;
+
+          const colCount = table.tHead.rows[0].cells.length;
+          let visibility = loadVisibility(colCount);
+
+          // 1) Apply visibility to table
+          visibility.forEach((show, i) => setColumnVisibility(table, i, show));
+
+          // 2) Sync checkboxes
+          document.querySelectorAll('.col-toggle').forEach(cb => {
+            const idx = parseInt(cb.getAttribute('data-col'), 10);
+            if (!Number.isNaN(idx) && visibility[idx] !== undefined) {
+              cb.checked = !!visibility[idx];
+              if (idx === colCount - 1) { cb.checked = true; cb.disabled = true; } // Actions forced visible
+            }
+          });
+
+          // 3) Initial fit
+          fitTableColumns(table);
+
+          // 4) Changes with persistence + re-fit
+          document.querySelectorAll('.col-toggle').forEach(cb => {
+            cb.addEventListener('change', function () {
+              const idx = parseInt(this.getAttribute('data-col'), 10);
+              const show = this.checked;
+
+              if (idx === colCount - 1) { this.checked = true; return; } // Actions always visible
+
+              visibility[idx] = show;
+              saveVisibility(visibility);
+              setColumnVisibility(table, idx, show);
+              fitTableColumns(table);
+            });
+          });
+
+          // 5) Re‑fit on resize (debounced)
+          window.addEventListener('resize', (function debounce(fn, ms){
+            let t; return function(){ clearTimeout(t); t = setTimeout(fn, ms); };
+          })(() => fitTableColumns(table), 150));
+        })();
+      </script>
     </div>
   </div>
 </div>
