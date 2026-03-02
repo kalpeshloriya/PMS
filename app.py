@@ -21,7 +21,10 @@ except Exception:
 
 app = Flask(__name__)
 
-# Jinja helper for safe url_for
+# --- Project branding ---
+PROJECT_NAME = "Qorix Competency Framework"
+
+# Jinja helper for safe url_for + global project name
 @app.context_processor
 def utility_processor():
     def safe_url_for(endpoint, **values):
@@ -29,7 +32,7 @@ def utility_processor():
             return url_for(endpoint, **values)
         except BuildError:
             return '#'
-    return dict(safe_url_for=safe_url_for)
+    return dict(safe_url_for=safe_url_for, PROJECT_NAME=PROJECT_NAME)
 
 # --- App config ---
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY','change-me-in-production')
@@ -53,15 +56,13 @@ db_url = os.getenv('DATABASE_URL')
 def force_psycopg3(url: str) -> str:
     if not url:
         return url
-    # Already correct?
     if url.startswith("postgresql+psycopg://"):
         return url
-    # Handle both postgres:// and postgresql://
     if url.startswith("postgres://"):
         return "postgresql+psycopg://" + url[len("postgres://"):]
     if url.startswith("postgresql://"):
         return "postgresql+psycopg://" + url[len("postgresql://"):]
-    return url  # leave custom drivers untouched
+    return url
 
 if db_url:
     db_url = force_psycopg3(db_url)
@@ -1102,8 +1103,8 @@ def self_review():
                 emp_name = user.full_name or user.username
                 mgr_name = mgr.full_name or mgr.username
                 cycle_name = (db.session.get(ReviewCycle, sel_cycle_id).name if sel_cycle_id else 'Current')
-                subj = "[PMS] Self Review submitted: " + emp_name
-                body = f"""Hi {mgr_name},\n{emp_name} has submitted a self review for cycle {cycle_name}.\nPlease log in to review: http://127.0.0.1:5000/review/manager\nRegards,\nPMS"""
+                subj = "[QCF] Self Review submitted: " + emp_name
+                body = f"""Hi {mgr_name},\n{emp_name} has submitted a self review for cycle {cycle_name}.\nPlease log in to review: http://127.0.0.1:5000/review/manager\nRegards,\nQCF"""
                 send_email(mgr.email, subj, body)
             flash('Self review saved and manager notified', 'success')
         return redirect(url_for('self_review', cycle_id=sel_cycle_id))
@@ -1158,13 +1159,12 @@ def manager_review():
         if saved_any:
             db.session.commit()
             log_audit('UPSERT','ManagerEvaluation', None, after={'user_id':sel_user.id,'cycle_id':sel_cycle_id})
-            # Notify employee
             if getattr(sel_user, 'email', None):
                 mgr_name = current_user.full_name or current_user.username
                 emp_name = sel_user.full_name or sel_user.username
                 cycle_name = (db.session.get(ReviewCycle, sel_cycle_id).name if sel_cycle_id else 'Current')
-                subj = "[PMS] Your Manager Review is updated: " + emp_name
-                body = f"""Hi {emp_name},\nYour manager ({mgr_name}) has submitted/updated your manager review for cycle {cycle_name}.\nPlease log in to view details.\nRegards,\nPMS"""
+                subj = "[QCF] Your Manager Review is updated: " + emp_name
+                body = f"""Hi {emp_name},\nYour manager ({mgr_name}) has submitted/updated your manager review for cycle {cycle_name}.\nPlease log in to view details.\nRegards,\nQCF"""
                 send_email(sel_user.email, subj, body)
             flash('Manager review saved and employee notified', 'success')
         return redirect(url_for('manager_review', user_id=user_id, cycle_id=sel_cycle_id))
@@ -1300,7 +1300,7 @@ def notify():
             continue
         has_self = SelfEvaluation.query.filter_by(user_id=u.id, cycle_id=(cyc.id if cyc else None)).first()
         if not has_self and u.email:
-            ok = send_email(u.email, 'Self Review Reminder', f'Please complete your self review for cycle {cyc.name if cyc else "Current"}.')
+            ok = send_email(u.email, 'QCF – Self Review Reminder', f'Please complete your self review for cycle {cyc.name if cyc else "Current"}.')
             if ok:
                 notified += 1
     send_teams_card('Review Reminders Sent', f'{notified} self-review reminders sent.')

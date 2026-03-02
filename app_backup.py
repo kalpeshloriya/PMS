@@ -1,14 +1,15 @@
-
 from datetime import datetime, date
 from collections import defaultdict
 import io, os, csv, json
-
-from flask import Flask, render_template, request, redirect, url_for, flash, send_file
+from flask import Flask, render_template, request, redirect, url_for, flash, send_file, abort
 from flask_sqlalchemy import SQLAlchemy
 from flask_login import LoginManager, login_user, login_required, logout_user, current_user, UserMixin
 from werkzeug.security import generate_password_hash, check_password_hash
-
+from werkzeug.routing import BuildError
 import requests
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy import or_
+
 try:
     import pandas as pd
 except Exception:
@@ -20,8 +21,7 @@ except Exception:
 
 app = Flask(__name__)
 
-from werkzeug.routing import BuildError
-
+# Jinja helper for safe url_for
 @app.context_processor
 def utility_processor():
     def safe_url_for(endpoint, **values):
@@ -31,24 +31,21 @@ def utility_processor():
             return '#'
     return dict(safe_url_for=safe_url_for)
 
+# --- App config ---
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY','change-me-in-production')
-
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
 AZURE_CLIENT_ID = os.environ.get('AZURE_CLIENT_ID')
 AZURE_TENANT_ID = os.environ.get('AZURE_TENANT_ID')
 AZURE_CLIENT_SECRET = os.environ.get('AZURE_CLIENT_SECRET')
 REDIRECT_URI = os.environ.get('REDIRECT_URI', 'http://localhost:5000/auth/redirect')
+
 SMTP_HOST = os.environ.get('SMTP_HOST')
 SMTP_PORT = int(os.environ.get('SMTP_PORT', '587'))
 SMTP_USER = os.environ.get('SMTP_USER')
 SMTP_PASS = os.environ.get('SMTP_PASS')
 SMTP_FROM = os.environ.get('SMTP_FROM', 'no-reply@localhost')
 TEAMS_WEBHOOK_URL = os.environ.get('TEAMS_WEBHOOK_URL')
-
-
-
-import os
 
 # --- Database configuration (force psycopg3 driver in prod, SQLite locally) ---
 db_url = os.getenv('DATABASE_URL')
@@ -68,17 +65,13 @@ def force_psycopg3(url: str) -> str:
 
 if db_url:
     db_url = force_psycopg3(db_url)
-
 app.config['SQLALCHEMY_DATABASE_URI'] = db_url or "sqlite:///pms.db"
 app.config.setdefault('SQLALCHEMY_TRACK_MODIFICATIONS', False)
+print("DB in use:", app.config.get('SQLALCHEMY_DATABASE_URI'))
 
-print("DB in use:", app.config.get('SQLALCHEMY_DATABASE_URI'))  # keep for logs
-
+# --- Extensions ---
 db = SQLAlchemy(app)
-
 login_manager = LoginManager(app)
-# --- Database configuration (env-first: Postgres on Render, SQLite locally) ---
-
 login_manager.login_view = 'login'
 
 # ---- Models ----
@@ -149,7 +142,6 @@ class CompetencyExpectation(db.Model):
     grade_id = db.Column(db.Integer, db.ForeignKey('grade.id'))
     expected_level = db.Column(db.Integer, default=0)
     weight = db.Column(db.Integer, default=1)
-
     competency = db.relationship('CompetencySkill', foreign_keys=[competency_id])
     group = db.relationship('Group', foreign_keys=[group_id])
     grade = db.relationship('Grade', foreign_keys=[grade_id])
@@ -205,7 +197,7 @@ class AuditLog(db.Model):
 def load_user(user_id):
     return db.session.get(User, int(user_id))
 
-# RBAC
+# RBAC decorator
 from functools import wraps
 
 def require_roles(*roles):
@@ -221,7 +213,7 @@ def require_roles(*roles):
         return wrapper
     return decorator
 
-# Seed
+# Seed data
 
 def seed_once():
     if User.query.first():
@@ -244,7 +236,6 @@ def seed_once():
     e.set_password('Password123!')
     db.session.add(e)
     db.session.commit()
-
     e.manager_id = m.id
     db.session.commit()
 
@@ -279,7 +270,14 @@ def seed_once():
 
 def log_audit(action, entity, entity_id=None, before=None, after=None):
     try:
-        db.session.add(AuditLog(actor_id=(current_user.id if current_user and current_user.is_authenticated else None), action=action, entity=entity, entity_id=entity_id, before_json=json.dumps(before) if before else None, after_json=json.dumps(after) if after else None))
+        db.session.add(AuditLog(
+            actor_id=(current_user.id if current_user and current_user.is_authenticated else None),
+            action=action,
+            entity=entity,
+            entity_id=entity_id,
+            before_json=json.dumps(before) if before else None,
+            after_json=json.dumps(after) if after else None
+        ))
         db.session.commit()
     except Exception:
         db.session.rollback()
@@ -294,18 +292,30 @@ def current_expectations_for(user):
     return {r.competency_id: (r.expected_level, r.weight) for r in rows}
 
 def latest_self_levels(user_id):
-    sub = db.session.query(SelfEvaluation.competency_id, db.func.max(SelfEvaluation.created_at).label('mx')).filter_by(user_id=user_id).group_by(SelfEvaluation.competency_id).subquery()
-    rows = db.session.query(SelfEvaluation).join(sub, (SelfEvaluation.competency_id==sub.c.competency_id) & (SelfEvaluation.created_at==sub.c.mx)).all()
+    sub = db.session.query(SelfEvaluation.competency_id, db.func.max(SelfEvaluation.created_at).label('mx')).\
+        filter_by(user_id=user_id).group_by(SelfEvaluation.competency_id).subquery()
+    rows = db.session.query(SelfEvaluation).join(
+        sub,
+        (SelfEvaluation.competency_id == sub.c.competency_id) & (SelfEvaluation.created_at == sub.c.mx)
+    ).all()
     return {r.competency_id: (r.level, r.cycle_id) for r in rows}
 
 def latest_manager_levels(user_id):
-    sub = db.session.query(ManagerEvaluation.competency_id, db.func.max(ManagerEvaluation.created_at).label('mx')).filter_by(user_id=user_id).group_by(ManagerEvaluation.competency_id).subquery()
-    rows = db.session.query(ManagerEvaluation).join(sub, (ManagerEvaluation.competency_id==sub.c.competency_id) & (ManagerEvaluation.created_at==sub.c.mx)).all()
+    sub = db.session.query(ManagerEvaluation.competency_id, db.func.max(ManagerEvaluation.created_at).label('mx')).\
+        filter_by(user_id=user_id).group_by(ManagerEvaluation.competency_id).subquery()
+    rows = db.session.query(ManagerEvaluation).join(
+        sub,
+        (ManagerEvaluation.competency_id == sub.c.competency_id) & (ManagerEvaluation.created_at == sub.c.mx)
+    ).all()
     return {r.competency_id: (r.level, r.cycle_id) for r in rows}
 
 def latest_self_details(user_id):
-    sub = db.session.query(SelfEvaluation.competency_id, db.func.max(SelfEvaluation.created_at).label('mx')).filter_by(user_id=user_id).group_by(SelfEvaluation.competency_id).subquery()
-    rows = db.session.query(SelfEvaluation).join(sub, (SelfEvaluation.competency_id==sub.c.competency_id) & (SelfEvaluation.created_at==sub.c.mx)).all()
+    sub = db.session.query(SelfEvaluation.competency_id, db.func.max(SelfEvaluation.created_at).label('mx')).\
+        filter_by(user_id=user_id).group_by(SelfEvaluation.competency_id).subquery()
+    rows = db.session.query(SelfEvaluation).join(
+        sub,
+        (SelfEvaluation.competency_id == sub.c.competency_id) & (SelfEvaluation.created_at == sub.c.mx)
+    ).all()
     out = {}
     for r in rows:
         out[r.competency_id] = {'level': r.level, 'comment': r.comment, 'cycle_id': r.cycle_id}
@@ -345,7 +355,6 @@ def send_email(to, subject, body):
     except Exception:
         return False
 
-
 def send_teams_card(title, text):
     if not TEAMS_WEBHOOK_URL:
         return False
@@ -356,7 +365,7 @@ def send_teams_card(title, text):
     except Exception:
         return False
 
-
+# --- Auth Routes ---
 @app.route('/login', methods=['GET','POST'])
 def login():
     if request.method == 'POST':
@@ -386,7 +395,11 @@ def login_sso():
     if not (AZURE_CLIENT_ID and AZURE_TENANT_ID) or not msal:
         flash('SSO not configured', 'warning')
         return redirect(url_for('login'))
-    auth_app = msal.ConfidentialClientApplication(AZURE_CLIENT_ID, authority=f"https://login.microsoftonline.com/{AZURE_TENANT_ID}", client_credential=AZURE_CLIENT_SECRET)
+    auth_app = msal.ConfidentialClientApplication(
+        AZURE_CLIENT_ID,
+        authority=f"https://login.microsoftonline.com/{AZURE_TENANT_ID}",
+        client_credential=AZURE_CLIENT_SECRET
+    )
     auth_url = auth_app.get_authorization_request_url(scopes=['User.Read'], redirect_uri=REDIRECT_URI)
     return redirect(auth_url)
 
@@ -398,13 +411,17 @@ def auth_redirect():
     if not code:
         flash('SSO failed: no code', 'danger')
         return redirect(url_for('login'))
-    auth_app = msal.ConfidentialClientApplication(AZURE_CLIENT_ID, authority=f"https://login.microsoftonline.com/{AZURE_TENANT_ID}", client_credential=AZURE_CLIENT_SECRET)
+    auth_app = msal.ConfidentialClientApplication(
+        AZURE_CLIENT_ID,
+        authority=f"https://login.microsoftonline.com/{AZURE_TENANT_ID}",
+        client_credential=AZURE_CLIENT_SECRET
+    )
     token = auth_app.acquire_token_by_authorization_code(code, scopes=['User.Read'], redirect_uri=REDIRECT_URI)
     if 'id_token_claims' in token:
         claims = token['id_token_claims']
         upn = claims.get('preferred_username') or claims.get('email')
         name = claims.get('name')
-        user = User.query.filter((User.email==upn) | (User.username==upn)).first()
+        user = User.query.filter(or_(User.email == upn, User.username == upn)).first()
         if not user:
             user = User(username=upn, email=upn, full_name=name, is_manager=False, app_role='EMPLOYEE')
             user.set_password(os.urandom(8).hex())
@@ -428,7 +445,7 @@ def index():
         return redirect(url_for('team_members'))
     return redirect(url_for('dashboard' if current_user.is_manager else 'self_review'))
 
-# Dashboard (Manager)
+# --- Dashboard (Manager) ---
 @app.route('/dashboard')
 @login_required
 def dashboard():
@@ -456,23 +473,128 @@ def dashboard():
                 elif gap <= 2: gap_buckets['1-2'] += 1
                 else: gap_buckets['>2'] += 1
         skill_counts = sum(len(current_expectations_for(u)) for u in team) or 1
-        kpis = {'team_members': len(team), 'skills_assessed': skill_counts, 'open_gaps': open_gaps, 'avg_gap': total_weighted_gap / skill_counts}
+        kpis = {
+            'team_members': len(team),
+            'skills_assessed': skill_counts,
+            'open_gaps': open_gaps,
+            'avg_gap': total_weighted_gap / skill_counts
+        }
         top = sorted(skill_gap_counts.items(), key=lambda x: x[1], reverse=True)[:10]
-        charts = {'top_gaps': {'labels': [t[0] for t in top], 'data': [t[1] for t in top]}, 'gap_distribution': {'labels': list(gap_buckets.keys()), 'data': list(gap_buckets.values())}}
+        charts = {
+            'top_gaps': {'labels': [t[0] for t in top], 'data': [t[1] for t in top]},
+            'gap_distribution': {'labels': list(gap_buckets.keys()), 'data': list(gap_buckets.values())}
+        }
         return render_template('dashboard.html', kpis=kpis, charts=charts)
     elif current_user.app_role == 'ADMIN':
         return redirect(url_for('team_members'))
     else:
         return redirect(url_for('self_review'))
 
-# Admin CRUD (ADMIN only)
+# --- Utility: safe delete helper ---
 
-def parse_bool(val):
-    return str(val).lower() in ('1','true','yes','y','on')
+def safe_delete(instance, entity_name: str, redirect_endpoint: str,
+                success_msg='Deleted', in_use_msg='Record is in use and cannot be deleted.'):
+    try:
+        before = instance.__dict__.copy()
+        db.session.delete(instance)
+        db.session.commit()
+        log_audit('DELETE', entity_name, getattr(instance, 'id', None), before=before)
+        flash(success_msg, 'success')
+    except IntegrityError:
+        db.session.rollback()
+        flash(in_use_msg, 'danger')
+    except Exception as e:
+        db.session.rollback()
+        flash(f'Error deleting {entity_name.lower()}: {e}', 'danger')
+    return redirect(url_for(redirect_endpoint))
 
+# --- Admin: Team Members (create/update) ---
+@app.route('/admin/team', methods=['GET','POST'])
+@login_required
+@require_roles('ADMIN')
+def team_members():
+    # Dropdown data
+    groups = Group.query.order_by(Group.name).all()
+    grades = Grade.query.order_by(Grade.name).all()
+    roles = Role.query.order_by(Role.name).all()
+    mgr_flagged = User.query.filter_by(is_manager=True).all()
+    admins = User.query.filter_by(app_role='ADMIN').all()
+    managers = list({u.id: u for u in (mgr_flagged + admins)}.values())
 
-# --- Team Members (ADMIN only) with dropdowns and last-admin guard ---
+    edit_id = request.args.get('edit_id', type=int)
+    item = db.session.get(User, edit_id) if edit_id else None
 
+    if request.method == 'POST':
+        data = request.form
+        creating = item is None
+
+        if creating:
+            username = (data.get('username') or '').strip()
+            if not username:
+                flash('Username is required', 'danger')
+                return redirect(url_for('team_members'))
+            if User.query.filter_by(username=username).first():
+                flash('Username already exists', 'danger')
+                return redirect(url_for('team_members'))
+            item = User(username=username)
+            db.session.add(item)
+
+        before = dict(item.__dict__)
+        # basic fields
+        item.full_name = data.get('full_name') or None
+        item.email = data.get('email') or None
+        def parse_bool(v):
+            return str(v).strip().lower() in ('1','true','yes','y','on')
+        item.is_manager = parse_bool(data.get('is_manager','false'))
+
+        # app role guard (cannot demote last admin)
+        new_app_role = data.get('app_role') or item.app_role or 'EMPLOYEE'
+        if item.app_role == 'ADMIN' and new_app_role != 'ADMIN':
+            remaining_admins = User.query.filter(User.app_role=='ADMIN', User.id!=item.id).count()
+            if remaining_admins == 0:
+                flash('Cannot demote the LAST admin user.', 'danger')
+                return redirect(url_for('team_members'))
+        item.app_role = new_app_role
+
+        # passwords
+        pwd = data.get('password') or ''
+        cpw = data.get('confirm_password') or ''
+        if creating:
+            if len(pwd) < 8:
+                flash('Password must be at least 8 characters for new user.', 'danger')
+                return redirect(url_for('team_members'))
+            if pwd != cpw:
+                flash('Passwords do not match.', 'danger')
+                return redirect(url_for('team_members'))
+            item.set_password(pwd)
+        else:
+            if pwd:
+                if len(pwd) < 8:
+                    flash('New password must be at least 8 characters.', 'danger')
+                    return redirect(url_for('team_members', edit_id=item.id))
+                if pwd != cpw:
+                    flash('New passwords do not match.', 'danger')
+                    return redirect(url_for('team_members', edit_id=item.id))
+                item.set_password(pwd)
+
+        def to_int_or_none(val):
+            s = (val or '').strip()
+            return int(s) if s.isdigit() else None
+        item.group_id = to_int_or_none(data.get('group_id'))
+        item.grade_id = to_int_or_none(data.get('grade_id'))
+        item.role_id = to_int_or_none(data.get('role_id'))
+        item.manager_id = to_int_or_none(data.get('manager_id'))
+
+        db.session.commit()
+        log_audit('UPSERT','User', item.id, before=before, after=item.__dict__)
+        flash('Saved team member', 'success')
+        return redirect(url_for('team_members'))
+
+    rows = User.query.order_by(User.id).all()
+    return render_template('team_members.html', rows=rows, item=item,
+                           groups=groups, grades=grades, roles=roles, managers=managers)
+
+# --- Admin: Team Member Delete (safe) ---
 @app.route('/admin/team/delete/<int:id>')
 @login_required
 @require_roles('ADMIN')
@@ -480,33 +602,25 @@ def team_members_delete(id):
     u = db.session.get(User, id)
     if not u:
         abort(404)
-
     # Guard: cannot delete the LAST admin
     if u.app_role == 'ADMIN':
-        remaining_admins = User.query.filter(User.app_role == 'ADMIN',
-                                             User.id != u.id).count()
+        remaining_admins = User.query.filter(User.app_role == 'ADMIN', User.id != u.id).count()
         if remaining_admins == 0:
             flash('Cannot delete the LAST admin user.', 'danger')
             return redirect(url_for('team_members'))
-
-    # (Optional) prevent deleting yourself when you’re the last admin
-    if current_user.id == u.id:
-        other_admins = User.query.filter(User.app_role == 'ADMIN',
-                                         User.id != u.id).count()
+    # Optional: prevent deleting yourself if you are the last admin
+    if current_user.id == u.id and u.app_role == 'ADMIN':
+        other_admins = User.query.filter(User.app_role == 'ADMIN', User.id != u.id).count()
         if other_admins == 0:
             flash('You cannot delete your own account while you are the last admin.', 'danger')
             return redirect(url_for('team_members'))
+    return safe_delete(
+        u, 'User', 'team_members',
+        success_msg='User deleted',
+        in_use_msg='Cannot delete user: this account is still referenced (e.g., as a manager). Reassign dependents first.'
+    )
 
-    before = dict(u.__dict__)
-    db.session.delete(u)
-    db.session.commit()
-    log_audit('DELETE', 'User', id, before=before)
-
-    flash('Deleted', 'success')
-    return redirect(url_for('team_members'))
-# --- Groups (ADMIN only) ---
-from flask import abort  # ensure abort is imported at top if not already
-
+# --- Admin: Groups CRUD ---
 @app.route('/admin/groups', methods=['GET','POST'])
 @login_required
 @require_roles('ADMIN')
@@ -536,18 +650,20 @@ def groups():
 @require_roles('ADMIN')
 def groups_delete(id):
     r = Group.query.get_or_404(id)
-    before = r.__dict__.copy()
-    db.session.delete(r)
-    db.session.commit()
-    log_audit('DELETE','Group', id, before=before)
-    flash('Deleted', 'success')
-    return redirect(url_for('groups'))
+    return safe_delete(
+        r, 'Group', 'groups',
+        success_msg='Group deleted',
+        in_use_msg='Cannot delete group: it is referenced by one or more users or expectations.'
+    )
+
+# --- Admin: Grades ---
 @app.route('/admin/grades', methods=['GET','POST'])
 @login_required
 @require_roles('ADMIN')
 def grades():
     edit_id = request.args.get('edit_id', type=int)
     item = Grade.query.get(edit_id) if edit_id else None
+
     if request.method == 'POST':
         name = request.form['name']
         desc = request.form.get('description')
@@ -561,6 +677,7 @@ def grades():
         log_audit('UPSERT','Grade', item.id, after=item.__dict__)
         flash('Saved grade', 'success')
         return redirect(url_for('grades'))
+
     rows = Grade.query.order_by(Grade.id).all()
     return render_template('grades.html', rows=rows, item=item)
 
@@ -569,19 +686,20 @@ def grades():
 @require_roles('ADMIN')
 def grades_delete(id):
     r = Grade.query.get_or_404(id)
-    before = r.__dict__.copy()
-    db.session.delete(r)
-    db.session.commit()
-    log_audit('DELETE','Grade', id, before=before)
-    flash('Deleted', 'success')
-    return redirect(url_for('grades'))
+    return safe_delete(
+        r, 'Grade', 'grades',
+        success_msg='Grade deleted',
+        in_use_msg='Cannot delete grade: it is referenced by one or more users or expectations.'
+    )
 
+# --- Admin: Roles ---
 @app.route('/admin/roles', methods=['GET','POST'])
 @login_required
 @require_roles('ADMIN')
 def roles():
     edit_id = request.args.get('edit_id', type=int)
     item = Role.query.get(edit_id) if edit_id else None
+
     if request.method == 'POST':
         name = request.form['name']
         desc = request.form.get('description')
@@ -595,6 +713,7 @@ def roles():
         log_audit('UPSERT','Role', item.id, after=item.__dict__)
         flash('Saved role', 'success')
         return redirect(url_for('roles'))
+
     rows = Role.query.order_by(Role.id).all()
     return render_template('roles.html', rows=rows, item=item)
 
@@ -603,19 +722,20 @@ def roles():
 @require_roles('ADMIN')
 def roles_delete(id):
     r = Role.query.get_or_404(id)
-    before = r.__dict__.copy()
-    db.session.delete(r)
-    db.session.commit()
-    log_audit('DELETE','Role', id, before=before)
-    flash('Deleted', 'success')
-    return redirect(url_for('roles'))
+    return safe_delete(
+        r, 'Role', 'roles',
+        success_msg='Role deleted',
+        in_use_msg='Cannot delete role: it is referenced by one or more users.'
+    )
 
+# --- Admin: Tower Skills ---
 @app.route('/admin/tower-skills', methods=['GET','POST'])
 @login_required
 @require_roles('ADMIN')
 def tower_skills():
     edit_id = request.args.get('edit_id', type=int)
     item = TowerSkill.query.get(edit_id) if edit_id else None
+
     if request.method == 'POST':
         name = request.form['name']
         desc = request.form.get('description')
@@ -629,6 +749,7 @@ def tower_skills():
         log_audit('UPSERT','TowerSkill', item.id, after=item.__dict__)
         flash('Saved tower skill', 'success')
         return redirect(url_for('tower_skills'))
+
     rows = TowerSkill.query.order_by(TowerSkill.id).all()
     return render_template('tower_skills.html', rows=rows, item=item)
 
@@ -637,19 +758,20 @@ def tower_skills():
 @require_roles('ADMIN')
 def tower_skills_delete(id):
     r = TowerSkill.query.get_or_404(id)
-    before = r.__dict__.copy()
-    db.session.delete(r)
-    db.session.commit()
-    log_audit('DELETE','TowerSkill', id, before=before)
-    flash('Deleted', 'success')
-    return redirect(url_for('tower_skills'))
+    return safe_delete(
+        r, 'TowerSkill', 'tower_skills',
+        success_msg='Tower skill deleted',
+        in_use_msg='Cannot delete tower skill: it is referenced in Tower→Competency mappings.'
+    )
 
+# --- Admin: Competency Skills ---
 @app.route('/admin/competency-skills', methods=['GET','POST'])
 @login_required
 @require_roles('ADMIN')
 def competency_skills():
     edit_id = request.args.get('edit_id', type=int)
     item = CompetencySkill.query.get(edit_id) if edit_id else None
+
     if request.method == 'POST':
         name = request.form['name']
         desc = request.form.get('description')
@@ -663,6 +785,7 @@ def competency_skills():
         log_audit('UPSERT','CompetencySkill', item.id, after=item.__dict__)
         flash('Saved competency', 'success')
         return redirect(url_for('competency_skills'))
+
     rows = CompetencySkill.query.order_by(CompetencySkill.id).all()
     return render_template('competency_skills.html', rows=rows, item=item)
 
@@ -671,13 +794,13 @@ def competency_skills():
 @require_roles('ADMIN')
 def competency_skills_delete(id):
     r = CompetencySkill.query.get_or_404(id)
-    before = r.__dict__.copy()
-    db.session.delete(r)
-    db.session.commit()
-    log_audit('DELETE','CompetencySkill', id, before=before)
-    flash('Deleted', 'success')
-    return redirect(url_for('competency_skills'))
+    return safe_delete(
+        r, 'CompetencySkill', 'competency_skills',
+        success_msg='Competency skill deleted',
+        in_use_msg='Cannot delete competency skill: it is referenced in mappings, expectations, reviews, or courses.'
+    )
 
+# --- Admin: Mappings ---
 @app.route('/admin/mappings')
 @login_required
 @require_roles('ADMIN')
@@ -688,7 +811,8 @@ def mappings():
     groups = Group.query.all()
     grades = Grade.query.all()
     expectations = CompetencyExpectation.query.all()
-    return render_template('mappings.html', towers=towers, competencies=competencies, tower_comp=tower_comp, groups=groups, grades=grades, expectations=expectations)
+    return render_template('mappings.html', towers=towers, competencies=competencies,
+                           tower_comp=tower_comp, groups=groups, grades=grades, expectations=expectations)
 
 @app.route('/admin/mappings/tower-comp', methods=['POST'])
 @login_required
@@ -708,12 +832,11 @@ def add_tower_comp_map():
 @require_roles('ADMIN')
 def del_tower_comp_map(id):
     m = TowerCompetencyMap.query.get_or_404(id)
-    before = {'tower_id': m.tower_id, 'competency_id': m.competency_id}
-    db.session.delete(m)
-    db.session.commit()
-    log_audit('DELETE','TowerCompetencyMap', id, before=before)
-    flash('Mapping removed', 'success')
-    return redirect(url_for('mappings'))
+    return safe_delete(
+        m, 'TowerCompetencyMap', 'mappings',
+        success_msg='Mapping removed',
+        in_use_msg='Cannot delete mapping: record is in use.'
+    )
 
 @app.route('/admin/mappings/expectation', methods=['POST'])
 @login_required
@@ -723,7 +846,6 @@ def add_comp_expectation():
     group_id = int(request.form['group_id']) if request.form.get('group_id') else None
     grade_id = int(request.form['grade_id']) if request.form.get('grade_id') else None
     expected_level = int(request.form['expected_level'])
-
     q = CompetencyExpectation.query.filter_by(competency_id=competency_id, group_id=group_id, grade_id=grade_id).first()
     if q:
         before = q.__dict__.copy()
@@ -743,13 +865,13 @@ def add_comp_expectation():
 @require_roles('ADMIN')
 def del_comp_expectation(id):
     e = CompetencyExpectation.query.get_or_404(id)
-    before = e.__dict__.copy()
-    db.session.delete(e)
-    db.session.commit()
-    log_audit('DELETE','CompetencyExpectation', id, before=before)
-    flash('Expectation removed', 'success')
-    return redirect(url_for('mappings'))
+    return safe_delete(
+        e, 'CompetencyExpectation', 'mappings',
+        success_msg='Expectation removed',
+        in_use_msg='Cannot delete expectation: record is in use.'
+    )
 
+# --- Admin: Expected Levels (bulk) ---
 @app.route('/admin/expected-levels', methods=['GET','POST'])
 @login_required
 @require_roles('ADMIN')
@@ -762,7 +884,8 @@ def expected_levels():
         competencies = CompetencySkill.query.all()
         for c in competencies:
             val = request.form.get(f'expected_{c.id}')
-            if val is None: continue
+            if val is None:
+                continue
             val = int(val)
             weight = int(request.form.get(f'weight_{c.id}', '1'))
             e = CompetencyExpectation.query.filter_by(competency_id=c.id, group_id=group_id, grade_id=grade_id).first()
@@ -784,7 +907,6 @@ def expected_levels():
     grade_id = request.args.get('grade_id', type=int)
     sel_group = db.session.get(Group, group_id) if group_id else None
     sel_grade = db.session.get(Grade, grade_id) if grade_id else None
-
     competencies = CompetencySkill.query.all()
     expectations = {}
     weights = {}
@@ -792,10 +914,11 @@ def expected_levels():
         rows = CompetencyExpectation.query.filter_by(group_id=sel_group.id, grade_id=sel_grade.id).all()
         expectations = {r.competency_id: r.expected_level for r in rows}
         weights = {r.competency_id: (r.weight or 1) for r in rows}
+    return render_template('expected_levels.html', groups=groups, grades=grades,
+                           sel_group=sel_group, sel_grade=sel_grade,
+                           competencies=competencies, expectations=expectations, weights=weights)
 
-    return render_template('expected_levels.html', groups=groups, grades=grades, sel_group=sel_group, sel_grade=sel_grade, competencies=competencies, expectations=expectations, weights=weights)
-
-# Import / Export (ADMIN)
+# --- Admin: Import / Export ---
 @app.route('/admin/import-export', methods=['GET','POST'])
 @login_required
 @require_roles('ADMIN')
@@ -829,7 +952,8 @@ def export_data(entity, fmt):
     filename = f'{entity}.{fmt}'
     if fmt == 'xlsx' and pd is not None:
         buf = io.BytesIO()
-        pd.DataFrame(rows).to_excel(buf, index=False, engine='openpyxl')
+        import pandas as _pd
+        _pd.DataFrame(rows).to_excel(buf, index=False, engine='openpyxl')
         buf.seek(0)
         return send_file(buf, as_attachment=True, download_name=filename, mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
     buf = io.StringIO()
@@ -839,7 +963,6 @@ def export_data(entity, fmt):
         writer.writerow(r)
     buf.seek(0)
     return send_file(io.BytesIO(buf.getvalue().encode('utf-8')), as_attachment=True, download_name=f'{entity}.csv', mimetype='text/csv')
-
 
 def export_rows(entity):
     if entity == 'users':
@@ -870,13 +993,12 @@ def export_rows(entity):
         rows = [{'id':c.id,'title':c.title,'competency_id':c.competency_id,'min_level':c.min_level,'external_id':c.external_id,'url':c.url} for c in Course.query.all()]
         return rows, list(rows[0].keys()) if rows else ['id','title','competency_id','min_level','external_id','url']
     if entity == 'self_reviews':
-        rows = [{'id':r.id,'user_id':r.user_id,'competency_id':r.competency_id,'cycle_id':r.cycle_id,'level':r.level,'comment':r.comment,'created_at':r.created_at} for r in SelfEvaluation.query.all()]
+        rows = [{'id':r.id,'user_id':r.user_id,'competency_id':r.competency_id,'cycle_id':r.cycle_id,'level':r.level,'comment':r.comment,'created_at':r.created_at.isoformat() if r.created_at else None} for r in SelfEvaluation.query.all()]
         return rows, list(rows[0].keys()) if rows else ['id','user_id','competency_id','cycle_id','level','comment','created_at']
     if entity == 'manager_reviews':
-        rows = [{'id':r.id,'user_id':r.user_id,'manager_id':r.manager_id,'competency_id':r.competency_id,'cycle_id':r.cycle_id,'level':r.level,'comment':r.comment,'created_at':r.created_at} for r in ManagerEvaluation.query.all()]
+        rows = [{'id':r.id,'user_id':r.user_id,'manager_id':r.manager_id,'competency_id':r.competency_id,'cycle_id':r.cycle_id,'level':r.level,'comment':r.comment,'created_at':r.created_at.isoformat() if r.created_at else None} for r in ManagerEvaluation.query.all()]
         return rows, list(rows[0].keys()) if rows else ['id','user_id','manager_id','competency_id','cycle_id','level','comment','created_at']
     return [], []
-
 
 def import_rows(entity, rows):
     cnt = 0
@@ -907,17 +1029,39 @@ def import_rows(entity, rows):
             elif entity == 'tower_comp':
                 db.session.add(TowerCompetencyMap(tower_id=int(r['tower_id']), competency_id=int(r['competency_id'])))
             elif entity == 'expectations':
-                db.session.add(CompetencyExpectation(competency_id=int(r['competency_id']), group_id=int(r['group_id']) if r.get('group_id') else None, grade_id=int(r['grade_id']) if r.get('grade_id') else None, expected_level=int(r['expected_level']), weight=int(r.get('weight',1))))
+                db.session.add(CompetencyExpectation(
+                    competency_id=int(r['competency_id']),
+                    group_id=int(r['group_id']) if r.get('group_id') else None,
+                    grade_id=int(r['grade_id']) if r.get('grade_id') else None,
+                    expected_level=int(r['expected_level']),
+                    weight=int(r.get('weight',1))
+                ))
             elif entity == 'courses':
-                db.session.add(Course(title=r['title'], competency_id=int(r['competency_id']) if r.get('competency_id') else None, min_level=int(r.get('min_level',0)), external_id=r.get('external_id'), url=r.get('url')))
+                db.session.add(Course(
+                    title=r['title'],
+                    competency_id=int(r['competency_id']) if r.get('competency_id') else None,
+                    min_level=int(r.get('min_level',0)),
+                    external_id=r.get('external_id'), url=r.get('url')
+                ))
             elif entity == 'self_reviews':
                 from datetime import datetime as _dt
                 created_at = _dt.fromisoformat(r.get('created_at')) if r.get('created_at') else datetime.utcnow()
-                db.session.add(SelfEvaluation(user_id=int(r['user_id']), competency_id=int(r['competency_id']), cycle_id=int(r['cycle_id']) if r.get('cycle_id') else None, level=int(r['level']), comment=r.get('comment'), created_at=created_at))
+                db.session.add(SelfEvaluation(
+                    user_id=int(r['user_id']),
+                    competency_id=int(r['competency_id']),
+                    cycle_id=int(r['cycle_id']) if r.get('cycle_id') else None,
+                    level=int(r['level']), comment=r.get('comment'), created_at=created_at
+                ))
             elif entity == 'manager_reviews':
                 from datetime import datetime as _dt
                 created_at = _dt.fromisoformat(r.get('created_at')) if r.get('created_at') else datetime.utcnow()
-                db.session.add(ManagerEvaluation(user_id=int(r['user_id']), manager_id=int(r['manager_id']) if r.get('manager_id') else None, competency_id=int(r['competency_id']), cycle_id=int(r['cycle_id']) if r.get('cycle_id') else None, level=int(r['level']), comment=r.get('comment'), created_at=created_at))
+                db.session.add(ManagerEvaluation(
+                    user_id=int(r['user_id']),
+                    manager_id=int(r['manager_id']) if r.get('manager_id') else None,
+                    competency_id=int(r['competency_id']),
+                    cycle_id=int(r['cycle_id']) if r.get('cycle_id') else None,
+                    level=int(r['level']), comment=r.get('comment'), created_at=created_at
+                ))
             cnt += 1
         except Exception:
             db.session.rollback()
@@ -925,14 +1069,13 @@ def import_rows(entity, rows):
     db.session.commit()
     return cnt
 
-# Reviews
+# --- Reviews ---
 @app.route('/review/self', methods=['GET','POST'])
 @login_required
 def self_review():
     user = current_user
     if getattr(user, 'is_manager', False):
         return redirect(url_for('manager_review'))
-
     exp_map = current_expectations_for(user)
     comp_ids = list(exp_map.keys())
     competencies = CompetencySkill.query.filter(CompetencySkill.id.in_(comp_ids)).all() if comp_ids else []
@@ -951,26 +1094,17 @@ def self_review():
                 level=int(val), cycle_id=sel_cycle_id, comment=(cmt or None)
             ))
             saved_any = True
-
         if saved_any:
             db.session.commit()
             log_audit('UPSERT','SelfEvaluation', None, after={'user_id':user.id,'cycle_id':sel_cycle_id})
-
             mgr = db.session.get(User, getattr(user, 'manager_id', None)) if getattr(user, 'manager_id', None) else None
             if mgr and getattr(mgr, 'email', None):
                 emp_name = user.full_name or user.username
                 mgr_name = mgr.full_name or mgr.username
                 cycle_name = (db.session.get(ReviewCycle, sel_cycle_id).name if sel_cycle_id else 'Current')
                 subj = "[PMS] Self Review submitted: " + emp_name
-                body = """Hi {mgr_name},
-
-{emp_name} has submitted a self review for cycle {cycle_name}.
-Please log in to review: http://127.0.0.1:5000/review/manager
-
-Regards,
-PMS""".format(mgr_name=mgr_name, emp_name=emp_name, cycle_name=cycle_name)
+                body = f"""Hi {mgr_name},\n{emp_name} has submitted a self review for cycle {cycle_name}.\nPlease log in to review: http://127.0.0.1:5000/review/manager\nRegards,\nPMS"""
                 send_email(mgr.email, subj, body)
-
             flash('Self review saved and manager notified', 'success')
         return redirect(url_for('self_review', cycle_id=sel_cycle_id))
 
@@ -988,19 +1122,17 @@ PMS""".format(mgr_name=mgr_name, emp_name=emp_name, cycle_name=cycle_name)
             'gap': gap, 'weighted_gap': weighted_gap,
             'courses': courses[:3], 'self_comment': self_comment
         })
-    return render_template('self_review.html', competencies=competencies, rows=rows, cycles=cycles, sel_cycle_id=sel_cycle_id)
-
+    return render_template('self_review.html', competencies=competencies, rows=rows,
+                           cycles=cycles, sel_cycle_id=sel_cycle_id)
 
 @app.route('/review/manager', methods=['GET','POST'])
 @login_required
 def manager_review():
     if not getattr(current_user, 'is_manager', False):
         return redirect(url_for('index'))
-
     team = User.query.filter_by(manager_id=current_user.id).all()
     team_ids = {u.id for u in team}
     sel_user = None
-
     cycles = ReviewCycle.query.order_by(ReviewCycle.start_date.desc().nullslast()).all()
     sel_cycle_id = request.values.get('cycle_id', type=int) or (current_cycle().id if current_cycle() else None)
 
@@ -1009,11 +1141,9 @@ def manager_review():
         if user_id not in team_ids:
             flash('You can only review your direct reports.', 'danger')
             return redirect(url_for('manager_review'))
-
         sel_user = db.session.get(User, user_id)
         exp_map = current_expectations_for(sel_user)
         competencies = CompetencySkill.query.filter(CompetencySkill.id.in_(exp_map.keys())).all()
-
         saved_any = False
         for c in competencies:
             val = request.form.get(f'comp_{c.id}')
@@ -1025,26 +1155,17 @@ def manager_review():
                 level=int(val), cycle_id=sel_cycle_id, comment=(cmt or None)
             ))
             saved_any = True
-
         if saved_any:
             db.session.commit()
             log_audit('UPSERT','ManagerEvaluation', None, after={'user_id':sel_user.id,'cycle_id':sel_cycle_id})
-
-        # Notify employee
+            # Notify employee
             if getattr(sel_user, 'email', None):
                 mgr_name = current_user.full_name or current_user.username
                 emp_name = sel_user.full_name or sel_user.username
                 cycle_name = (db.session.get(ReviewCycle, sel_cycle_id).name if sel_cycle_id else 'Current')
                 subj = "[PMS] Your Manager Review is updated: " + emp_name
-                body = """Hi {emp_name},
-
-Your manager ({mgr_name}) has submitted/updated your manager review for cycle {cycle_name}.
-Please log in to view details.
-
-Regards,
-PMS""".format(emp_name=emp_name, mgr_name=mgr_name, cycle_name=cycle_name)
+                body = f"""Hi {emp_name},\nYour manager ({mgr_name}) has submitted/updated your manager review for cycle {cycle_name}.\nPlease log in to view details.\nRegards,\nPMS"""
                 send_email(sel_user.email, subj, body)
-
             flash('Manager review saved and employee notified', 'success')
         return redirect(url_for('manager_review', user_id=user_id, cycle_id=sel_cycle_id))
 
@@ -1061,7 +1182,6 @@ PMS""".format(emp_name=emp_name, mgr_name=mgr_name, cycle_name=cycle_name)
         competencies = CompetencySkill.query.filter(CompetencySkill.id.in_(exp_map.keys())).all()
         self_map = latest_self_details(sel_user.id)
         man_lvls = {k:v[0] for k,v in latest_manager_levels(sel_user.id).items()}
-
         for c in competencies:
             expected, weight = exp_map.get(c.id, (0,1))
             actual = man_lvls.get(c.id, self_map.get(c.id, {}).get('level', 0))
@@ -1076,10 +1196,10 @@ PMS""".format(emp_name=emp_name, mgr_name=mgr_name, cycle_name=cycle_name)
                 'gap': gap, 'weighted_gap': weighted_gap,
                 'courses': courses[:3]
             })
+    return render_template('manager_review.html', team=team, sel_user=sel_user, rows=rows,
+                           cycles=cycles, sel_cycle_id=sel_cycle_id)
 
-    return render_template('manager_review.html', team=team, sel_user=sel_user, rows=rows, cycles=cycles, sel_cycle_id=sel_cycle_id)
-
-
+# --- Trends ---
 @app.route('/trends')
 @login_required
 def trends():
@@ -1109,10 +1229,12 @@ def trends():
                 s = SelfEvaluation.query.filter_by(user_id=sel_user.id, competency_id=c.id, cycle_id=cyc.id).order_by(SelfEvaluation.created_at.desc()).first()
                 mgr_points.append(m.level if m else None)
                 self_points.append(s.level if s else None)
-            charts.append({'id': f'chart_{c.id}', 'title': f'{c.name}', 'labels': labels, 'datasets': [ {'label':'Manager', 'data': mgr_points, 'borderColor':'#3b82f6'}, {'label':'Self', 'data': self_points, 'borderColor':'#f59e0b'} ]})
+            charts.append({'id': f'chart_{c.id}', 'title': f'{c.name}', 'labels': labels,
+                           'datasets': [ {'label':'Manager', 'data': mgr_points, 'borderColor':'#3b82f6'},
+                                         {'label':'Self', 'data': self_points, 'borderColor':'#f59e0b'} ]})
     return render_template('trends.html', team=team, sel_user=sel_user, charts=charts)
 
-# Calibration (ADMIN)
+# --- Admin: Calibration ---
 @app.route('/admin/calibration', methods=['GET','POST'])
 @login_required
 @require_roles('ADMIN')
@@ -1129,7 +1251,8 @@ def calibration():
             for comp_id in exp.keys():
                 val = request.form.get(f'cal_{u.id}_{comp_id}')
                 note = request.form.get(f'note_{u.id}_{comp_id}')
-                if val is None: continue
+                if val is None:
+                    continue
                 rec = ManagerCalibration.query.filter_by(user_id=u.id, competency_id=comp_id, cycle_id=cycle_id).first()
                 if rec:
                     before = rec.__dict__.copy()
@@ -1148,7 +1271,6 @@ def calibration():
     cycle_id = request.args.get('cycle_id', type=int)
     if cycle_id:
         sel_cycle = db.session.get(ReviewCycle, cycle_id)
-
     rows = []
     if sel_cycle:
         users = User.query.all()
@@ -1158,11 +1280,13 @@ def calibration():
             for c in comps:
                 m = ManagerEvaluation.query.filter_by(user_id=u.id, competency_id=c.id, cycle_id=sel_cycle.id).order_by(ManagerEvaluation.created_at.desc()).first()
                 cal = ManagerCalibration.query.filter_by(user_id=u.id, competency_id=c.id, cycle_id=sel_cycle.id).first()
-                rows.append({'user': u, 'competency': c, 'manager_level': (m.level if m else None), 'calibrated_level': (cal.calibrated_level if cal else None), 'note': (cal.note if cal else '')})
-
+                rows.append({'user': u, 'competency': c,
+                            'manager_level': (m.level if m else None),
+                            'calibrated_level': (cal.calibrated_level if cal else None),
+                            'note': (cal.note if cal else '')})
     return render_template('calibration.html', cycles=cycles, sel_cycle=sel_cycle, rows=rows)
 
-# Notifications trigger (ADMIN)
+# --- Admin: Notifications trigger ---
 @app.route('/admin/notify')
 @login_required
 @require_roles('ADMIN')
@@ -1172,15 +1296,18 @@ def notify():
     users = User.query.all()
     for u in users:
         exp = current_expectations_for(u)
-        if not exp: continue
+        if not exp:
+            continue
         has_self = SelfEvaluation.query.filter_by(user_id=u.id, cycle_id=(cyc.id if cyc else None)).first()
         if not has_self and u.email:
             ok = send_email(u.email, 'Self Review Reminder', f'Please complete your self review for cycle {cyc.name if cyc else "Current"}.')
-            if ok: notified += 1
+            if ok:
+                notified += 1
     send_teams_card('Review Reminders Sent', f'{notified} self-review reminders sent.')
     flash(f'Sent {notified} reminders', 'success')
     return redirect(url_for('team_members'))
 
+# --- Admin: Courses ---
 @app.route('/admin/courses', methods=['GET','POST'])
 @login_required
 @require_roles('ADMIN')
@@ -1195,7 +1322,6 @@ def courses():
         min_level = int(request.form.get('min_level', 0))
         external_id = request.form.get('external_id')
         url = request.form.get('url')
-
         if item is None:
             item = Course(
                 title=title, competency_id=competency_id, min_level=min_level,
@@ -1219,17 +1345,52 @@ def courses():
 @login_required
 @require_roles('ADMIN')
 def courses_delete(id):
-    c = Course.query.get(id)
-    if not c:
-        flash('Course not found', 'danger')
-        return redirect(url_for('courses'))
-    db.session.delete(c)
-    db.session.commit()
-    flash('Deleted course', 'success')
-    return redirect(url_for('courses'))
+    c = Course.query.get_or_404(id)
+    return safe_delete(
+        c, 'Course', 'courses',
+        success_msg='Course deleted',
+        in_use_msg='Cannot delete course: it is referenced by other records.'
+    )
 
-# Flask 3 safe init
+# --- Public Signup (single definition) ---
+@app.route('/signup', methods=['GET','POST'])
+def signup():
+    if current_user.is_authenticated:
+        return redirect(url_for('index'))
+    error = None
+    if request.method == 'POST':
+        username = (request.form.get('username') or '').strip()
+        email = (request.form.get('email') or '').strip()
+        pwd = request.form.get('password') or ''
+        cpw = request.form.get('confirm_password') or ''
+        if not username:
+            error = 'Username is required.'
+        elif User.query.filter_by(username=username).first():
+            error = 'Username already exists.'
+        elif not email:
+            error = 'Email is required.'
+        elif len(pwd) < 8:
+            error = 'Password must be at least 8 characters.'
+        elif pwd != cpw:
+            error = 'Passwords do not match.'
+        if not error:
+            u = User(username=username, email=email, full_name=None,
+                     is_manager=False, app_role='EMPLOYEE')
+            u.set_password(pwd)
+            db.session.add(u)
+            db.session.commit()
+            log_audit('CREATE','User', u.id, after=u.__dict__)
+            flash('Signup successful. Please log in.', 'success')
+            return redirect(url_for('login'))
+        flash(error, 'danger')
+    return render_template('signup.html')
 
+# --- Health check endpoint ---
+@app.get('/healthz')
+def healthz():
+    return 'ok', 200
+
+# --- DB init ---
 def init_db():
     db.create_all()
     seed_once()
@@ -1241,240 +1402,3 @@ if __name__ == '__main__':
     with app.app_context():
         init_db()
     app.run(debug=True)
-
-
-# --- Team Members (password aware, last-admin guarded) ---
-
-def signup():
-    if current_user.is_authenticated:
-        return redirect(url_for('index'))
-
-    error = None
-    if request.method == 'POST':
-        username = (request.form.get('username') or '').strip()
-        email    = (request.form.get('email') or '').strip()
-        pwd      = request.form.get('password') or ''
-        cpw      = request.form.get('confirm_password') or ''
-
-        if not username:
-            error = 'Username is required.'
-        elif User.query.filter_by(username=username).first():
-            error = 'Username already exists.'
-        elif not email:
-            error = 'Email is required.'
-        elif len(pwd) < 8:
-            error = 'Password must be at least 8 characters.'
-        elif pwd != cpw:
-            error = 'Passwords do not match.'
-
-        if not error:
-            u = User(username=username, email=email, full_name=None,
-                     is_manager=False, app_role='EMPLOYEE')
-            if hasattr(u,'set_password'):
-                u.set_password(pwd)
-            else:
-                from werkzeug.security import generate_password_hash
-                u.password_hash = generate_password_hash(pwd)
-            db.session.add(u)
-            db.session.commit()
-            log_audit('CREATE','User', u.id, after=u.__dict__)
-            flash('Signup successful. Please log in.', 'success')
-            return redirect(url_for('login'))
-        flash(error, 'danger')
-
-    return render_template('signup.html')
-
-
-
-# --- Team Members (password aware, last-admin guarded) ---
-
-def signup():
-    if current_user.is_authenticated:
-        return redirect(url_for('index'))
-
-    error = None
-    if request.method == 'POST':
-        username = (request.form.get('username') or '').strip()
-        email    = (request.form.get('email') or '').strip()
-        pwd      = request.form.get('password') or ''
-        cpw      = request.form.get('confirm_password') or ''
-
-        if not username:
-            error = 'Username is required.'
-        elif User.query.filter_by(username=username).first():
-            error = 'Username already exists.'
-        elif not email:
-            error = 'Email is required.'
-        elif len(pwd) < 8:
-            error = 'Password must be at least 8 characters.'
-        elif pwd != cpw:
-            error = 'Passwords do not match.'
-
-        if not error:
-            u = User(username=username, email=email, full_name=None,
-                     is_manager=False, app_role='EMPLOYEE')
-            if hasattr(u,'set_password'):
-                u.set_password(pwd)
-            else:
-                from werkzeug.security import generate_password_hash
-                u.password_hash = generate_password_hash(pwd)
-            db.session.add(u)
-            db.session.commit()
-            log_audit('CREATE','User', u.id, after=u.__dict__)
-            flash('Signup successful. Please log in.', 'success')
-            return redirect(url_for('login'))
-        flash(error, 'danger')
-
-    return render_template('signup.html')
-
-
-
-# --- Team Members (password aware, last-admin guarded) ---
-
-@app.route('/admin/team', methods=['GET','POST'])
-@login_required
-@require_roles('ADMIN')
-def team_members():
-    # Dropdown data
-    groups = Group.query.order_by(Group.name).all()
-    grades = Grade.query.order_by(Grade.name).all()
-    roles  = Role.query.order_by(Role.name).all()
-
-    mgr_flagged = User.query.filter_by(is_manager=True).all()
-    admins      = User.query.filter_by(app_role='ADMIN').all()
-    managers = list({u.id: u for u in (mgr_flagged + admins)}.values())
-
-    edit_id = request.args.get('edit_id', type=int)
-    item = db.session.get(User, edit_id) if edit_id else None
-
-    if request.method == 'POST':
-        data = request.form
-        creating = item is None
-
-        if creating:
-            username = (data.get('username') or '').strip()
-            if not username:
-                flash('Username is required', 'danger')
-                return redirect(url_for('team_members'))
-            if User.query.filter_by(username=username).first():
-                flash('Username already exists', 'danger')
-                return redirect(url_for('team_members'))
-            item = User(username=username)
-            db.session.add(item)
-
-        before = dict(item.__dict__)
-
-        # basic fields
-        item.full_name = data.get('full_name') or None
-        item.email = data.get('email') or None
-
-        def parse_bool(v):
-            return str(v).strip().lower() in ('1','true','yes','y','on')
-        item.is_manager = parse_bool(data.get('is_manager','false'))
-
-        # app role guard (cannot demote last admin)
-        new_app_role = data.get('app_role') or item.app_role or 'EMPLOYEE'
-        if item.app_role == 'ADMIN' and new_app_role != 'ADMIN':
-            remaining_admins = User.query.filter(User.app_role=='ADMIN', User.id!=item.id).count()
-            if remaining_admins == 0:
-                flash('Cannot demote the LAST admin user.', 'danger')
-                return redirect(url_for('team_members'))
-        item.app_role = new_app_role
-
-        # passwords
-        pwd = data.get('password') or ''
-        cpw = data.get('confirm_password') or ''
-        if creating:
-            if len(pwd) < 8:
-                flash('Password must be at least 8 characters for new user.', 'danger')
-                return redirect(url_for('team_members'))
-            if pwd != cpw:
-                flash('Passwords do not match.', 'danger')
-                return redirect(url_for('team_members'))
-            if hasattr(item,'set_password'):
-                item.set_password(pwd)
-            else:
-                from werkzeug.security import generate_password_hash
-                item.password_hash = generate_password_hash(pwd)
-        else:
-            if pwd:
-                if len(pwd) < 8:
-                    flash('New password must be at least 8 characters.', 'danger')
-                    return redirect(url_for('team_members', edit_id=item.id))
-                if pwd != cpw:
-                    flash('New passwords do not match.', 'danger')
-                    return redirect(url_for('team_members', edit_id=item.id))
-                if hasattr(item,'set_password'):
-                    item.set_password(pwd)
-                else:
-                    from werkzeug.security import generate_password_hash
-                    item.password_hash = generate_password_hash(pwd)
-
-        def to_int_or_none(val):
-            s = (val or '').strip()
-            return int(s) if s.isdigit() else None
-
-        item.group_id   = to_int_or_none(data.get('group_id'))
-        item.grade_id   = to_int_or_none(data.get('grade_id'))
-        item.role_id    = to_int_or_none(data.get('role_id'))
-        item.manager_id = to_int_or_none(data.get('manager_id'))
-
-        db.session.commit()
-        log_audit('UPSERT','User', item.id, before=before, after=item.__dict__)
-        flash('Saved team member', 'success')
-        return redirect(url_for('team_members'))
-
-    rows = User.query.order_by(User.id).all()
-    return render_template('team_members.html', rows=rows, item=item,
-                           groups=groups, grades=grades, roles=roles, managers=managers)
-
-
-
-# --- Public Signup (username, email, password) ---
-
-@app.route('/signup', methods=['GET','POST'])
-def signup():
-    if current_user.is_authenticated:
-        return redirect(url_for('index'))
-
-    error = None
-    if request.method == 'POST':
-        username = (request.form.get('username') or '').strip()
-        email    = (request.form.get('email') or '').strip()
-        pwd      = request.form.get('password') or ''
-        cpw      = request.form.get('confirm_password') or ''
-
-        if not username:
-            error = 'Username is required.'
-        elif User.query.filter_by(username=username).first():
-            error = 'Username already exists.'
-        elif not email:
-            error = 'Email is required.'
-        elif len(pwd) < 8:
-            error = 'Password must be at least 8 characters.'
-        elif pwd != cpw:
-            error = 'Passwords do not match.'
-
-        if not error:
-            u = User(username=username, email=email, full_name=None,
-                     is_manager=False, app_role='EMPLOYEE')
-            if hasattr(u,'set_password'):
-                u.set_password(pwd)
-            else:
-                from werkzeug.security import generate_password_hash
-                u.password_hash = generate_password_hash(pwd)
-            db.session.add(u)
-            db.session.commit()
-            log_audit('CREATE','User', u.id, after=u.__dict__)
-            flash('Signup successful. Please log in.', 'success')
-            return redirect(url_for('login'))
-        flash(error, 'danger')
-
-    return render_template('signup.html')
-
-
-# --- Health check endpoint ---
-@app.get('/healthz')
-def healthz():
-    return 'ok', 200
-
