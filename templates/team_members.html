@@ -4,7 +4,14 @@
   /* ===== Page‑scoped styles (only this template) ===== */
 
   /* Right card fills its column */
-  .member-list-card { width: 100%; max-width: 100%; }
+
+
+.member-list-card {
+    width: 2000px;
+    max-width: 2000px;
+}
+
+
 
   /* Keep the table width constant and clamp columns */
   .team-table {
@@ -33,6 +40,14 @@
   .dropdown-menu-dark .form-check-label { color: #fff; font-weight: 500; }
   .dropdown-menu-dark .form-check-input { border-color: rgba(255,255,255,.35); }
   .dropdown-menu-dark .form-text { color: rgba(255,255,255,.7); }
+
+/* Half-width Team Member form (desktop and up) */
+@media (min-width: 768px){ .tm-form-half{ width:50%; } }
+
+/* Shift Member List 350px to the left on desktop+ */
+@media (min-width: 992px){ .shift-left-450{ margin-left:-350px !important; } }
+
+@media (min-width: 992px){ .shift-left-450{ margin-left:-450px !important; } }
 </style>
 
 <h3 class="mb-3">Team Members</h3>
@@ -40,7 +55,7 @@
 <div class="row">
   <!-- LEFT: Add/Edit form (left aligned; original fields preserved) -->
   <div class="col-md-5">
-    <div class="card p-3 mb-3">
+    <div class="card p-3 mb-3 tm-form-half">
       <h5>{{ 'Edit' if item else 'Add New' }}</h5>
 
       <form method="post">
@@ -153,7 +168,7 @@
   </div>
 
   <!-- RIGHT: Member List (right aligned, fills its column) -->
-  <div class="col-md-7">
+  <div class="col-md-7 shift-left-450">
     <div class="card p-3 member-list-card">
       <div class="d-flex align-items-center justify-content-between mb-2">
         <h5 class="mb-0">Member List</h5>
